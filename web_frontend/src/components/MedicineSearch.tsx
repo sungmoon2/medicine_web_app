@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { fetchNaverSearchResults, fetchUrlContent } from '../utils/naverApi';
-import { parseHtmlContent } from '../utils/htmlParser'; // 파서 유틸리티 필요
+import { fetchNaverSearchResults, fetchUrlContent } from './utils/naverApi';
+import { parseHtmlContent } from './utils/htmlParser';
 
 interface SearchResult {
   title: string;

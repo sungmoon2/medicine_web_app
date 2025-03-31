@@ -693,6 +693,95 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"JSON 내보내기 오류: {e}", exc_info=True)
             return None
+        
+    def get_medicine_details_by_url(self, url):
+        """
+        특정 URL의 의약품 상세 정보 조회
+        
+        Args:
+            url: 조회할 의약품 URL
+        
+        Returns:
+            dict: 의약품 상세 정보 또는 None
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # URL로 의약품 정보 조회
+            cursor.execute("SELECT * FROM medicines WHERE url = ?", (url,))
+            result = cursor.fetchone()
+            
+            if not result:
+                conn.close()
+                return None
+            
+            # 결과를 딕셔너리로 변환
+            columns = [desc[0] for desc in cursor.description]
+            
+            if self.db_type == 'sqlite':
+                medicine_data = {columns[i]: result[i] for i in range(len(columns))}
+            else:
+                # pymysql에서는 컬럼 이름과 값을 직접 매핑
+                medicine_data = {}
+                for i, column in enumerate(columns):
+                    medicine_data[column] = result[i]
+            
+            conn.close()
+            
+            return medicine_data
+            
+        except Exception as e:
+            logger.error(f"URL로 의약품 정보 조회 오류: {e}", exc_info=True)
+            return None
+
+    def get_all_medicines_with_details(self, limit=100, offset=0):
+        """
+        모든 의약품의 기본 정보와 URL 조회
+        
+        Args:
+            limit: 조회할 최대 항목 수
+            offset: 건너뛸 항목 수
+        
+        Returns:
+            list: 의약품 기본 정보 리스트
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # 기본 정보 조회 쿼리
+            query = """
+            SELECT id, korean_name, english_name, url, category, company 
+            FROM medicines 
+            ORDER BY id 
+            LIMIT ? OFFSET ?
+            """
+            
+            cursor.execute(query, (limit, offset))
+            results = cursor.fetchall()
+            
+            # 결과를 딕셔너리 리스트로 변환
+            columns = ['id', 'korean_name', 'english_name', 'url', 'category', 'company']
+            medicines = []
+            
+            for result in results:
+                if self.db_type == 'sqlite':
+                    medicine = {columns[i]: result[i] for i in range(len(columns))}
+                else:
+                    medicine = {}
+                    for i, column in enumerate(columns):
+                        medicine[column] = result[i]
+                
+                medicines.append(medicine)
+            
+            conn.close()
+            
+            return medicines
+            
+        except Exception as e:
+            logger.error(f"의약품 목록 조회 오류: {e}", exc_info=True)
+            return []
     
     def import_from_csv(self, csv_path):
         """
