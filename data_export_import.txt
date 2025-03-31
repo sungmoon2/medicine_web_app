@@ -1,0 +1,69 @@
+# JSON으로 데이터 내보내기 (기본)
+python main.py --export
+
+# CSV로 데이터 내보내기
+python main.py --export --export-format csv --output custom_output.csv
+
+# 데이터 가져오기
+python main.py --import medicines_export.json
+python main.py --import medicines_data.csv
+
+
+
+
+"""
+데이터 이동 시나리오:
+
+MySQL → VS Code (Local SQLite)
+
+MySQL에 있는 데이터를 VS Code 프로젝트의 SQLite로 가져오기
+목적: 로컬 개발 환경에서 데이터 활용
+
+
+
+Export/Import 흐름:
+복사MySQL Database → Export (JSON/CSV) → VS Code 프로젝트의 SQLite Database
+구체적인 상황:
+
+개발/테스트 환경에서 프로덕션 데이터 복제
+데이터 백업 및 로컬 작업
+다른 개발자와 데이터 공유
+
+실제 사용 예시:
+bash복사# 1. MySQL에서 데이터 추출 
+# (외부 도구나 MySQL Workbench에서 수행)
+mysqldump -u username -p database_name > medicines_backup.sql
+
+# 2. VS Code 프로젝트에서 데이터 가져오기
+python main.py --import medicines_backup.json
+주요 포인트:
+
+Export: 데이터를 파일로 내보내기
+Import: 파일에서 로컬 SQLite로 데이터 가져오기
+"""
+
+
+
+
+"""
+그러니까 Export를 해도 vs code 로컬에서는 해당 데이터가 있다는 거지 ?편집네, 맞습니다!
+Export를 하면 VS Code 로컬 프로젝트의 SQLite 데이터베이스에 이미 데이터가 존재합니다. Export는 단순히 해당 데이터를 파일(JSON 또는 CSV)로 추출하는 것입니다.
+예를 들어:
+
+크롤러로 데이터를 수집하면 → data/medicines.db (SQLite 데이터베이스)에 저장됩니다.
+python main.py --export를 실행하면 →
+
+data/json/medicines_export_날짜.json 파일 생성
+원본 데이터는 여전히 medicines.db에 그대로 존재
+단지 데이터의 복사본을 파일로 만든 것
+
+
+
+주요 사용 목적:
+
+데이터 백업
+다른 도구로 데이터 공유
+데이터 분석을 위한 추출
+
+데이터는 계속 로컬 SQLite DB에 남아있습니다.
+"""

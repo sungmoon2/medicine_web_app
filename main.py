@@ -218,17 +218,19 @@ def show_database_stats(db_manager):
     
     return {'medicines_count': medicines_count}
 
-def export_data(db_manager, output=None):
-    """데이터 내보내기"""
+def export_data(db_manager, output=None, format='json'):
+    """
+    데이터 내보내기
+    
+    Args:
+        db_manager: 데이터베이스 관리자
+        output: 출력 파일 경로 (None이면 자동 생성)
+        format: 내보내기 형식 ('json', 'csv')
+    
+    Returns:
+        dict: 내보내기 결과 정보
+    """
     log_section(logger, "데이터 내보내기")
-    
-    if not output:
-        # 기본 출력 파일명
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = f"medicine_export_{timestamp}.json"
-    
-    # TODO: 실제 내보내기 구현
-    print(f"\n데이터 내보내기 준비 중: {output}\n")
     
     # 의약품 수 조회
     medicines_count = db_manager.get_medicines_count()
@@ -238,15 +240,68 @@ def export_data(db_manager, output=None):
         print("오류: 내보낼 데이터가 없습니다.")
         return None
     
-    # TODO: 실제 내보내기 기능 구현 필요
-    # 지금은 더미 파일 생성
-    with open(output, 'w', encoding='utf-8') as f:
-        f.write(json.dumps({"count": medicines_count, "message": "내보내기 기능 준비 중"}, ensure_ascii=False, indent=2))
+    try:
+        # 형식에 따른 내보내기
+        if format.lower() == 'json':
+            output_path = db_manager.export_to_json(output)
+        elif format.lower() == 'csv':
+            output_path = db_manager.export_to_csv(output)
+        else:
+            raise ValueError(f"지원하지 않는 형식: {format}")
+        
+        # 결과 출력
+        print(f"\n데이터 내보내기 완료: {output_path}")
+        print(f"의약품 수: {medicines_count}개\n")
+        
+        return {
+            'output': output_path, 
+            'count': medicines_count,
+            'format': format
+        }
     
-    print(f"내보내기 완료: {output}")
-    print(f"의약품 수: {medicines_count}개\n")
+    except Exception as e:
+        logger.error(f"데이터 내보내기 오류: {e}")
+        print(f"오류: 데이터 내보내기 실패 - {e}")
+        return None
+
+def import_data(db_manager, input_path):
+    """
+    데이터 가져오기
     
-    return {'output': output, 'count': medicines_count}
+    Args:
+        db_manager: 데이터베이스 관리자
+        input_path: 가져올 파일 경로
+    
+    Returns:
+        dict: 가져오기 결과 정보
+    """
+    log_section(logger, "데이터 가져오기")
+    
+    try:
+        # 파일 확장자에 따른 가져오기 방식 선택
+        file_ext = os.path.splitext(input_path)[1].lower()
+        
+        if file_ext == '.json':
+            imported_count = db_manager.import_from_json(input_path)
+        elif file_ext == '.csv':
+            imported_count = db_manager.import_from_csv(input_path)
+        else:
+            raise ValueError(f"지원하지 않는 파일 형식: {file_ext}")
+        
+        # 결과 출력
+        print(f"\n데이터 가져오기 완료: {input_path}")
+        print(f"추가된 의약품 수: {imported_count}개\n")
+        
+        return {
+            'input': input_path, 
+            'count': imported_count,
+            'format': file_ext[1:]
+        }
+    
+    except Exception as e:
+        logger.error(f"데이터 가져오기 오류: {e}")
+        print(f"오류: 데이터 가져오기 실패 - {e}")
+        return None
 
 def main():
     """메인 함수"""

@@ -600,3 +600,164 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"의약품 수 조회 오류: {e}", exc_info=True)
             return 0
+    
+    def export_to_csv(self, output_path=None):
+        """
+        의약품 데이터를 CSV로 내보내기
+        
+        Args:
+            output_path: 출력 파일 경로 (None이면 자동 생성)
+        
+        Returns:
+            str: 내보낸 파일 경로
+        """
+        import csv
+        from datetime import datetime
+        
+        try:
+            # 출력 경로 설정
+            if not output_path:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = os.path.join(JSON_DIR, f"medicines_export_{timestamp}.csv")
+            
+            # 데이터베이스 연결
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # 모든 의약품 데이터 조회
+            cursor.execute("SELECT * FROM medicines")
+            columns = [desc[0] for desc in cursor.description]
+            
+            # CSV 파일 쓰기
+            with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+                csv_writer = csv.writer(csvfile)
+                
+                # 헤더 쓰기
+                csv_writer.writerow(columns)
+                
+                # 데이터 쓰기
+                for row in cursor.fetchall():
+                    csv_writer.writerow(row)
+            
+            conn.close()
+            
+            logger.info(f"CSV 내보내기 완료: {output_path}")
+            return output_path
+        
+        except Exception as e:
+            logger.error(f"CSV 내보내기 오류: {e}", exc_info=True)
+            return None
+    
+    def export_to_json(self, output_path=None):
+        """
+        의약품 데이터를 JSON으로 내보내기
+        
+        Args:
+            output_path: 출력 파일 경로 (None이면 자동 생성)
+        
+        Returns:
+            str: 내보낸 파일 경로
+        """
+        import json
+        from datetime import datetime
+        
+        try:
+            # 출력 경로 설정
+            if not output_path:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = os.path.join(JSON_DIR, f"medicines_export_{timestamp}.json")
+            
+            # 데이터베이스 연결
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # 모든 의약품 데이터 조회
+            cursor.execute("SELECT * FROM medicines")
+            columns = [desc[0] for desc in cursor.description]
+            
+            # 데이터를 딕셔너리 리스트로 변환
+            medicines = []
+            for row in cursor.fetchall():
+                medicine = dict(zip(columns, row))
+                medicines.append(medicine)
+            
+            conn.close()
+            
+            # JSON 파일로 저장
+            with open(output_path, 'w', encoding='utf-8') as jsonfile:
+                json.dump(medicines, jsonfile, ensure_ascii=False, indent=2)
+            
+            logger.info(f"JSON 내보내기 완료: {output_path}")
+            return output_path
+        
+        except Exception as e:
+            logger.error(f"JSON 내보내기 오류: {e}", exc_info=True)
+            return None
+    
+    def import_from_csv(self, csv_path):
+        """
+        CSV에서 의약품 데이터 가져오기
+        
+        Args:
+            csv_path: 가져올 CSV 파일 경로
+        
+        Returns:
+            int: 가져온 의약품 수
+        """
+        import csv
+        
+        try:
+            # CSV 파일 읽기
+            with open(csv_path, 'r', encoding='utf-8') as csvfile:
+                csv_reader = csv.DictReader(csvfile)
+                
+                # 불러온 데이터 저장
+                imported_count = 0
+                for row in csv_reader:
+                    # URL 중복 체크
+                    if not self.is_url_exists(row['url']):
+                        # 의약품 데이터 저장
+                        result = self.save_medicine(row)
+                        if result:
+                            imported_count += 1
+                
+                logger.info(f"CSV 가져오기 완료: {imported_count}개 의약품 추가")
+                return imported_count
+        
+        except Exception as e:
+            logger.error(f"CSV 가져오기 오류: {e}", exc_info=True)
+            return 0
+    
+    def import_from_json(self, json_path):
+        """
+        JSON에서 의약품 데이터 가져오기
+        
+        Args:
+            json_path: 가져올 JSON 파일 경로
+        
+        Returns:
+            int: 가져온 의약품 수
+        """
+        import json
+        
+        try:
+            # JSON 파일 읽기
+            with open(json_path, 'r', encoding='utf-8') as jsonfile:
+                medicines = json.load(jsonfile)
+                
+                # 불러온 데이터 저장
+                imported_count = 0
+                for medicine in medicines:
+                    # URL 중복 체크
+                    if not self.is_url_exists(medicine['url']):
+                        # 의약품 데이터 저장
+                        result = self.save_medicine(medicine)
+                        if result:
+                            imported_count += 1
+                
+                logger.info(f"JSON 가져오기 완료: {imported_count}개 의약품 추가")
+                return imported_count
+        
+        except Exception as e:
+            logger.error(f"JSON 가져오기 오류: {e}", exc_info=True)
+            return 0

@@ -1,0 +1,5 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 추가 전역 스타일이 필요하다면 여기에 작성 */
