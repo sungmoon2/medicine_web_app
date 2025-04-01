@@ -1,27 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CheckCircle2, XCircle } from 'lucide-react';
-
-// 의약품 인터페이스 정의
-interface Medicine {
-  id: number;
-  korean_name: string;
-  english_name: string;
-  url: string;
-  category: string;
-  company: string;
-}
-
-interface MedicineDetails {
-  database_details: any;
-  original_url: string;
-  html_preview?: string;
-}
-
-interface ValidationResult {
-  details: any;
-  validation: Record<string, boolean>;
-  extraction_completeness: number;
-}
+import { Medicine, MedicineDetails, ValidationResult } from '../types/medicine';
+import { fetchMedicines, fetchMedicineByUrl, validateMedicineExtraction } from '../utils/mockApiService';
 
 const MedicineDataViewer: React.FC = () => {
   const [medicines, setMedicines] = useState<Medicine[]>([]);
@@ -33,11 +13,10 @@ const MedicineDataViewer: React.FC = () => {
 
   // 의약품 목록 로드
   useEffect(() => {
-    const fetchMedicines = async () => {
+    const loadMedicines = async () => {
       try {
         setIsLoading(true);
-        const response = await fetch('/api/medicines');
-        const data = await response.json();
+        const data = await fetchMedicines();
         setMedicines(data.medicines);
         setIsLoading(false);
       } catch (error) {
@@ -47,7 +26,7 @@ const MedicineDataViewer: React.FC = () => {
       }
     };
 
-    fetchMedicines();
+    loadMedicines();
   }, []);
 
   // 의약품 상세 정보 및 검증 로드
@@ -57,13 +36,11 @@ const MedicineDataViewer: React.FC = () => {
       setError(null);
 
       // 상세 정보 로드
-      const detailsResponse = await fetch(`/api/medicine/url?url=${encodeURIComponent(url)}`);
-      const details = await detailsResponse.json();
+      const details = await fetchMedicineByUrl(url);
       setSelectedMedicine(details);
 
       // 데이터 검증
-      const validationResponse = await fetch(`/api/medicine/validate-extraction/${encodeURIComponent(url)}`);
-      const validation = await validationResponse.json();
+      const validation = await validateMedicineExtraction(url);
       setValidationResult(validation);
       
       setIsLoading(false);
