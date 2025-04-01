@@ -59,6 +59,7 @@ def parse_arguments():
     mode_group.add_argument('--stats', action='store_true', help='데이터베이스 통계 출력')
     mode_group.add_argument('--export', action='store_true', help='수집된 데이터를 JSON으로 내보내기')
     mode_group.add_argument('--continue', dest='continue_last', action='store_true', help='마지막 체크포인트에서 계속')
+    mode_group.add_argument('--retry-failed', action='store_true', help='실패한 URL 재시도')
     
     # 옵션
     parser.add_argument('--max-pages', type=int, default=MAX_PAGES_PER_KEYWORD, help='키워드당 최대 페이지 수')
@@ -70,7 +71,7 @@ def parse_arguments():
     args = parser.parse_args()
     
     # 기본값 설정
-    if not any([args.all, args.keyword, args.url, args.stats, args.export, args.continue_last]):
+    if not any([args.all, args.keyword, args.url, args.stats, args.export, args.continue_last, args.retry_failed]):
         args.all = True  # 기본적으로 모든 키워드 검색
     
     return args
@@ -101,7 +102,7 @@ def search_all_keywords(search_manager, max_pages, limit=None):
         limit: 무시됨 (호환성을 위해 유지)
     """
     # 의약품 검색 페이지에서 URL 링크 수집
-    urls = search_manager.fetch_medicine_list_from_search(start_page=1, max_pages=max_pages)
+    urls = search_manager.fetch_medicine_list_from_search(start_page=1, max_pages=100)
     
     # 수집된 URL로 의약품 데이터 추출
     stats = search_manager.fetch_medicine_data_from_urls(urls)
@@ -302,6 +303,51 @@ def import_data(db_manager, input_path):
         print(f"오류: 데이터 가져오기 실패 - {e}")
         return None
 
+def retry_failed_urls():
+    """
+    실패한 URL을 다시 시도합니다
+    """
+    log_section(logger, "실패한 URL 재시도")
+    
+    # 실패한 URL 파일 경로
+    failed_urls_path = os.path.join(os.getcwd(), 'debug_html', 'failed_urls.json')
+    
+    # 파일이 없으면 중단
+    if not os.path.exists(failed_urls_path):
+        logger.info("실패한 URL 파일이 없습니다")
+        return
+    
+    # 실패한 URL 목록 로드
+    with open(failed_urls_path, 'r', encoding='utf-8') as f:
+        failed_urls_data = json.load(f)
+    
+    # URL만 추출
+    failed_urls = [item['url'] for item in failed_urls_data]
+    
+    if not failed_urls:
+        logger.info("재시도할 URL이 없습니다")
+        return
+    
+    logger.info(f"총 {len(failed_urls)}개의 실패한 URL을 재시도합니다")
+    
+    # 컴포넌트 초기화
+    db_manager = DatabaseManager()
+    api_client = NaverAPIClient(db_manager)
+    parser = MedicineParser()
+    search_manager = SearchManager(api_client, db_manager, parser)
+    
+    # 최대 재시도 횟수 증가
+    stats = search_manager.fetch_medicine_data_from_urls(failed_urls, max_retries=5)
+    
+    # 결과 출력
+    print("\n실패한 URL 재시도 완료:")
+    print(f"처리된 URL: {stats['processed_urls']}/{len(failed_urls)}")
+    print(f"저장된 항목: {stats['saved_items']}")
+    print(f"여전히 실패한 URL: {stats['failed_urls_count']}")
+    print(f"소요 시간: {stats['duration_seconds']:.1f}초\n")
+    
+    return stats
+
 def main():
     """메인 함수"""
     try:
@@ -321,7 +367,11 @@ def main():
         db_manager, api_client, parser, search_manager = init_components()
         
         # 명령에 따라 실행
-        if args.all:
+        if args.retry_failed:
+            # 실패한 URL 재시도
+            retry_failed_urls()
+            
+        elif args.all:
             # 모든 키워드로 검색
             search_all_keywords(search_manager, args.max_pages, args.limit)
             

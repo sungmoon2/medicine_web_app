@@ -1,6 +1,7 @@
 """
 검색 및 크롤링 관리 모듈
 """
+import os
 import time
 import asyncio
 import aiohttp
@@ -11,12 +12,16 @@ from config.settings import (
     MAX_PAGES_PER_KEYWORD, CHECKPOINT_INTERVAL,
     CHECKPOINT_DIR, REQUEST_DELAY
 )
+from config.settings import ROOT_DIR
+
 import urllib.parse
+
 
 from bs4 import BeautifulSoup
 from utils.helpers import clean_html, save_completed_keyword, load_completed_keywords
 from utils.file_handler import save_checkpoint, download_image, save_medicine_json
 from utils.logger import get_logger, log_section
+from utils.helpers import clean_html, save_completed_keyword, load_completed_keywords, generate_keywords_for_medicines
 
 # 로거 설정
 logger = get_logger(__name__)
@@ -697,87 +702,224 @@ class SearchManager:
         
         return valid_urls
     
-    def fetch_medicine_list_from_search(self, start_page=1, max_pages=10):
+    def fetch_medicine_list_from_search(self, start_page=1, max_pages=100):
         """
         네이버 의약품 검색 페이지에서 의약품 목록 수집
         
         Args:
             start_page: 시작 페이지 번호
-            max_pages: 최대 수집 페이지 수
+            max_pages: 최대 수집 페이지 수 (기본값: 100)
             
         Returns:
             list: 의약품 페이지 URL 리스트
         """
         base_url = "https://terms.naver.com/medicineSearch.naver?page={}"
         medicine_urls = []
+        failed_pages = []
+        
+        # HTML 디버그 폴더 생성 - medicine_web_app 내에 지정
+        debug_dir = os.path.join(os.getcwd(), 'debug_html')
+        pages_dir = os.path.join(debug_dir, 'pages')
+        os.makedirs(debug_dir, exist_ok=True)
+        os.makedirs(pages_dir, exist_ok=True)
+        logger.info(f"HTML 디버그 파일 저장 경로: {debug_dir}")
+        
+        # 확실하게 디렉토리 생성
+        try:
+            os.makedirs(debug_dir, exist_ok=True)
+            logger.info(f"HTML 디버그 파일 저장 경로: {debug_dir}")
+        except Exception as e:
+            logger.error(f"디버그 디렉토리 생성 실패: {e}")
+            # 실패 시 현재 디렉토리에 저장
+            debug_dir = 'debug_html'
+            os.makedirs(debug_dir, exist_ok=True)
         
         # 통계 초기화
         total_pages_checked = 0
         total_medicine_links = 0
         
-        for page_num in range(start_page, start_page + max_pages):
-            # API 한도 체크
-            if self.api_client.check_api_limit():
-                logger.warning("일일 API 호출 한도에 도달했습니다. 수집 중단")
-                break
-            
+        # 최대 100페이지로 제한
+        end_page = min(start_page + max_pages, 101)  # 1부터 시작하므로 101로 설정
+        
+        # 첫 번째 패스: 모든 페이지 크롤링 시도
+        for page_num in range(start_page, end_page):
             try:
                 # 페이지 URL 생성
                 url = base_url.format(page_num)
+                logger.info(f"페이지 {page_num} 접근 중: {url}")
                 
                 # HTML 내용 가져오기
                 html_content = self.api_client.get_html_content(url)
                 
                 # HTML 내용 확인
                 if not html_content:
-                    logger.warning(f"페이지 {page_num}의 HTML 내용을 가져올 수 없음")
+                    logger.warning(f"페이지 {page_num}의 HTML 내용을 가져올 수 없음, 나중에 재시도합니다")
+                    failed_pages.append(page_num)
                     continue
+                
+                # 디버깅용 HTML 저장
+                try:
+                    debug_file = os.path.join(debug_dir, f"page_{page_num}.html")
+                    with open(debug_file, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    logger.info(f"페이지 {page_num} HTML 저장됨: {debug_file}")
+                except Exception as e:
+                    logger.error(f"HTML 저장 실패: {e}")
                 
                 # BeautifulSoup으로 파싱
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # 의약품 링크 찾기 
-                # 1. 이미지 옆의 의약품명 링크 찾기
-                medicine_links = soup.find_all('a', href=lambda href: 
-                    href and 'terms.naver.com/entry.naver' in href and 'cid=51000' in href)
+                # list_wrap 클래스 찾기 - 여러 선택자 시도
+                list_wrap = None
+                selectors = [
+                    'div.list_wrap',
+                    'div#content .list_wrap',
+                    '.list_wrap',
+                    'ul.content_list',
+                    '#content ul'
+                ]
                 
-                # 디버깅: 발견된 모든 링크 출력
-                logger.info(f"페이지 {page_num}에서 발견된 링크:")
-                for link in medicine_links:
-                    logger.info(link.get('href', 'No href'))
+                for selector in selectors:
+                    elements = soup.select(selector)
+                    if elements:
+                        list_wrap = elements[0]
+                        logger.info(f"선택자 '{selector}'로 리스트 요소 찾음")
+                        break
                 
-                # 링크 수집
-                for link in medicine_links:
-                    full_link = link.get('href', '')
+                if not list_wrap:
+                    logger.warning(f"페이지 {page_num}에서 list_wrap을 찾을 수 없음, 나중에 재시도합니다")
+                    failed_pages.append(page_num)
+                    continue
+                
+                # li 요소 찾기 - 직접 content_list를 찾지 않고 list_wrap 내의 모든 li 요소 검색
+                list_items = list_wrap.find_all('li')
+                if not list_items:
+                    # 대안으로 모든 a 태그 시도
+                    logger.warning(f"페이지 {page_num}에서 리스트 항목을 찾을 수 없음, a 태그로 시도합니다")
+                    list_items = list_wrap.find_all('a', href=True)
                     
-                    if full_link:
-                        # 상대 경로를 절대 경로로 변환
-                        full_link = f"https://terms.naver.com{full_link}" if not full_link.startswith('http') else full_link
-                        medicine_urls.append(full_link)
+                    if not list_items:
+                        logger.warning(f"페이지 {page_num}에서 링크를 찾을 수 없음, 나중에 재시도합니다")
+                        failed_pages.append(page_num)
+                        continue
                 
+                logger.info(f"페이지 {page_num}에서 발견된 리스트 항목 수: {len(list_items)}")
+                
+                # 각 항목에서 링크 추출
+                page_links = []
+                
+                # li 요소의 경우
+                for item in list_items:
+                    # 직접 a 태그 찾기
+                    link_tag = item.find('a', href=True)
+                    
+                    # a 태그가 없으면 다음 항목으로
+                    if not link_tag:
+                        continue
+                    
+                    href = link_tag['href']
+                    
+                    # 의약품 링크 필터링 (cid=51000이 있는지 확인)
+                    if 'cid=51000' in href and 'entry.naver' in href:
+                        # 상대 경로를 절대 경로로 변환
+                        full_link = f"https://terms.naver.com{href}" if not href.startswith('http') else href
+                        page_links.append(full_link)
+                
+                # 로깅
+                logger.info(f"페이지 {page_num}에서 추출된 의약품 링크 수: {len(page_links)}")
+                
+                # 링크 추가
+                medicine_urls.extend(page_links)
+                total_medicine_links += len(page_links)
                 total_pages_checked += 1
-                total_medicine_links += len(medicine_links)
                 
                 # 페이지 간 지연
                 time.sleep(REQUEST_DELAY)
-                
-                # 로깅
-                logger.info(f"페이지 {page_num} 처리: {len(medicine_links)}개 링크 발견")
-                
-                # 더 이상 의약품 링크가 없으면 중단
-                if not medicine_links:
-                    logger.info("더 이상 의약품 링크가 없습니다. 수집 중단")
-                    break
-            
+                    
             except Exception as e:
-                logger.error(f"페이지 {page_num} 처리 중 오류: {e}")
+                logger.error(f"페이지 {page_num} 처리 중 오류: {e}", exc_info=True)
+                failed_pages.append(page_num)
+        
+        # 두 번째 패스: 실패한 페이지 재시도
+        if failed_pages:
+            logger.info(f"실패한 페이지 {len(failed_pages)}개 재시도 중: {failed_pages}")
+            
+            for page_num in failed_pages:
+                try:
+                    # 페이지 URL 생성
+                    url = base_url.format(page_num)
+                    logger.info(f"[재시도] 페이지 {page_num} 접근 중: {url}")
+                    
+                    # HTML 내용 가져오기 (재시도 간격 증가)
+                    time.sleep(REQUEST_DELAY * 2)  # 더 긴 대기 시간
+                    html_content = self.api_client.get_html_content(url)
+                    
+                    if not html_content:
+                        logger.warning(f"[재시도] 페이지 {page_num}의 HTML 내용을 가져올 수 없음, 건너뜁니다")
+                        continue
+                    
+                    # BeautifulSoup으로 파싱
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # 모든 a 태그에서 의약품 링크 직접 추출 시도
+                    all_links = soup.find_all('a', href=True)
+                    
+                    page_links = []
+                    for link in all_links:
+                        href = link['href']
+                        if 'cid=51000' in href and 'entry.naver' in href:
+                            full_link = f"https://terms.naver.com{href}" if not href.startswith('http') else href
+                            page_links.append(full_link)
+                    
+                    logger.info(f"[재시도] 페이지 {page_num}에서 추출된 의약품 링크 수: {len(page_links)}")
+                    
+                    # 링크 추가
+                    medicine_urls.extend(page_links)
+                    total_medicine_links += len(page_links)
+                    if len(page_links) > 0:
+                        total_pages_checked += 1
+                    
+                except Exception as e:
+                    logger.error(f"[재시도] 페이지 {page_num} 처리 중 오류: {e}", exc_info=True)
         
         # 최종 로깅
         logger.info("의약품 검색 페이지 크롤링 완료")
         logger.info(f"총 확인 페이지: {total_pages_checked}")
         logger.info(f"총 발견 링크: {total_medicine_links}")
         
-        return medicine_urls
+        # 중복 제거
+        unique_urls = list(set(medicine_urls))
+        logger.info(f"중복 제거 후 총 링크: {len(unique_urls)}")
+        
+        return unique_urls
+        
+    def fetch_medicine_links_from_keywords(self, keywords):
+        """
+        여러 키워드로 의약품 링크 수집
+        
+        Args:
+            keywords: 검색 키워드 리스트
+            
+        Returns:
+            list: 중복 제거된 의약품 페이지 URL 리스트
+        """
+        all_urls = set()  # 중복 제거를 위해 집합 사용
+        
+        for keyword in keywords:
+            # 이미 처리된 키워드 건너뛰기
+            if keyword in self.completed_keywords:
+                logger.info(f"키워드 '{keyword}'는 이미 처리됨, 건너뜀")
+                continue
+            
+            # API로 링크 수집
+            urls = self.fetch_medicine_links_from_api(keyword)
+            all_urls.update(urls)
+            
+            # 키워드 처리 완료 표시
+            self.completed_keywords.add(keyword)
+            save_completed_keyword(keyword, self.completed_keywords_file)
+        
+        return list(all_urls)
 
     # main.py의 search_all_keywords 함수 수정
     def search_all_keywords(search_manager, max_pages, limit=None):
@@ -818,6 +960,13 @@ class SearchManager:
         total_urls = len(urls)
         processed_urls = 0
         saved_items = 0
+        failed_urls = []
+        
+        # 디버그 폴더 설정
+        debug_dir = os.path.join(os.getcwd(), 'debug_html')
+        extracted_data_dir = os.path.join(debug_dir, 'extracted_data')
+        os.makedirs(debug_dir, exist_ok=True)
+        os.makedirs(extracted_data_dir, exist_ok=True)
         
         # 최대 수집 항목 제한
         if max_items:
@@ -832,56 +981,174 @@ class SearchManager:
                 logger.warning("일일 API 호출 한도에 도달했습니다. 데이터 수집 중단")
                 break
             
+            # 이미 데이터베이스에 있는지 확인
+            if self.db_manager.is_url_exists(url):
+                logger.info(f"URL이 이미 처리됨, 건너뜀: {url}")
+                processed_urls += 1
+                continue
+            
             # 재시도 메커니즘 추가
+            success = False
+            error_message = ""
+            
             for attempt in range(max_retries):
                 try:
-                    # 데이터 추출
-                    medicine_data = self.process_medicine_data(url)
+                    # HTML 내용 가져오기
+                    html_content = self.api_client.get_html_content(url)
+                    
+                    if not html_content:
+                        logger.warning(f"HTML 내용을 가져올 수 없음: {url}")
+                        error_message = "HTML 내용을 가져올 수 없음"
+                        continue
+                    
+                    # BeautifulSoup으로 파싱
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # 의약품 정보 파싱
+                    medicine_data = self.parser.parse_medicine_detail(soup, url)
                     
                     if medicine_data:
+                        # 추출된 데이터를 HTML 파일로 저장
+                        url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+                        medicine_name = medicine_data.get('korean_name', 'unknown')
+                        safe_name = generate_safe_filename(medicine_name, max_length=50)
+                        
+                        extracted_html = f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>의약품 데이터: {medicine_name}</title>
+                            <style>
+                                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                                h1 {{ color: #333; }}
+                                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+                                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                                th {{ background-color: #f2f2f2; }}
+                                .url {{ word-break: break-all; }}
+                                .status {{ color: green; font-weight: bold; }}
+                            </style>
+                        </head>
+                        <body>
+                            <h1>의약품 데이터: {medicine_name}</h1>
+                            <p class="status">추출 상태: 성공</p>
+                            <p class="url">소스 URL: <a href="{url}" target="_blank">{url}</a></p>
+                            <table>
+                                <tr><th>필드</th><th>값</th></tr>
+                        """
+                        
+                        for field, value in medicine_data.items():
+                            if field != 'url' and field != 'data_hash':
+                                extracted_html += f"<tr><td>{field}</td><td>{value}</td></tr>\n"
+                        
+                        extracted_html += """
+                            </table>
+                        </body>
+                        </html>
+                        """
+                        
+                        # 추출 데이터 저장
+                        extract_file_path = os.path.join(extracted_data_dir, f"{safe_name}_{url_hash}.html")
+                        with open(extract_file_path, 'w', encoding='utf-8') as f:
+                            f.write(extracted_html)
+                        
                         # 데이터베이스에 저장
                         medicine_id = self.db_manager.save_medicine(medicine_data)
                         
                         if medicine_id:
                             medicine_data_list.append(medicine_data)
                             saved_items += 1
-                        break
+                            success = True
+                            break
+                        else:
+                            error_message = "데이터베이스 저장 실패"
                     else:
-                        logger.warning(f"데이터 추출 실패 ({attempt+1}/{max_retries}): {url}")
-                
+                        error_message = "데이터 추출 실패"
+                    
                 except Exception as e:
+                    error_message = str(e)
                     logger.error(f"URL 처리 시도 실패 ({attempt+1}/{max_retries}): {url}, {e}")
                     
-                    # 마지막 재시도에서도 실패하면 건너뜀
+                    # 마지막 재시도에서도 실패하면 기록
                     if attempt == max_retries - 1:
                         logger.error(f"URL 처리 완전 실패: {url}")
                 
                 # 요청 간 지연
                 time.sleep(REQUEST_DELAY)
             
+            # 처리 결과 기록
+            if not success:
+                # 실패한 URL과 에러 정보 기록
+                failed_urls.append({"url": url, "error": error_message})
+                
+                # 실패 정보를 HTML로 저장
+                if medicine_name is not None:
+                    safe_name = generate_safe_filename(medicine_name, max_length=50)
+                else:
+                    safe_name = "unknown"
+                    
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+                
+                failed_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <title>의약품 데이터 추출 실패: {url}</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                        h1 {{ color: #333; }}
+                        .error {{ color: red; font-weight: bold; }}
+                        .url {{ word-break: break-all; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>의약품 데이터 추출 실패</h1>
+                    <p class="url">URL: <a href="{url}" target="_blank">{url}</a></p>
+                    <p class="error">오류: {error_message}</p>
+                    <p>시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <p>재시도 횟수: {max_retries}</p>
+                </body>
+                </html>
+                """
+                
+                # 추출 실패 데이터 저장
+                failed_file_path = os.path.join(extracted_data_dir, f"failed_{safe_name}_{url_hash}.html")
+                with open(failed_file_path, 'w', encoding='utf-8') as f:
+                    f.write(failed_html)
+            
             processed_urls += 1
             
             # 진행상황 로깅
-            if processed_urls % 50 == 0:
+            if processed_urls % 10 == 0:
                 logger.info(f"진행 상황: {processed_urls}/{total_urls} URL 처리, {saved_items}개 데이터 저장")
         
         # 종료 시간 및 소요 시간 계산
         end_time = datetime.now()
         duration = end_time - start_time
         
+        # 실패한 URL을 파일로 저장
+        if failed_urls:
+            failed_urls_path = os.path.join(debug_dir, "failed_urls.json")
+            with open(failed_urls_path, 'w', encoding='utf-8') as f:
+                json.dump(failed_urls, f, ensure_ascii=False, indent=2)
+            logger.info(f"실패한 URL {len(failed_urls)}개를 {failed_urls_path}에 저장했습니다")
+        
         # 최종 통계
         final_stats = {
             'total_urls': total_urls,
             'processed_urls': processed_urls,
             'saved_items': saved_items,
+            'failed_urls_count': len(failed_urls),
             'start_time': start_time.isoformat(),
             'end_time': end_time.isoformat(),
-            'duration_seconds': duration.total_seconds()
+            'duration_seconds': duration.total_seconds(),
+            'failed_urls_file': failed_urls_path if failed_urls else None
         }
         
         # 최종 로깅
         logger.info("데이터 수집 완료")
-        logger.info(f"총 URL: {total_urls}, 처리된 URL: {processed_urls}, 저장된 항목: {saved_items}")
+        logger.info(f"총 URL: {total_urls}, 처리된 URL: {processed_urls}, 저장된 항목: {saved_items}, 실패: {len(failed_urls)}")
         logger.info(f"소요 시간: {duration}")
         
         return final_stats

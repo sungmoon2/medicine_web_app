@@ -46,3 +46,5 @@ wheels/
 *.swn
 .DS_Store
 node_modules
+
+debug_html/
