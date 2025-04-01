@@ -52,48 +52,307 @@ class SearchManager:
         
         logger.info(f"검색 관리자 초기화 완료 (완료된 키워드: {len(self.completed_keywords)}개)")
     
-    def is_medicine_item(self, item):
+    def is_medicine_item(self, url):
         """
-        검색 결과 항목이 의약품인지 확인
+        의약품 페이지 유효성 검사
         
         Args:
-            item: 검색 결과 항목
+            url: 검사할 URL
             
         Returns:
-            bool: 의약품이면 True
+            bool: 유효한 의약품 페이지면 True
         """
-        # BeautifulSoup으로 HTML 태그 제거
-        title = clean_html(item.get('title', ''))
-        description = clean_html(item.get('description', ''))
-        
-        # 의약품 사전 키워드 체크
-        if '의약품사전' not in item.get('link', '') and '의약품사전' not in description:
-            return False
-        
-        # 브랜드 정보 체크
-        if any(term in title for term in ['제약사', '제약회사', '(주)', '바이오', '파마', '약품회사']):
-            return False
-        
-        # 용어집/목록 페이지 체크
-        if any(term in title for term in ['목록', '종류', '리스트', '분류']):
-            return False
-        
-        # 의약품 형태 체크
-        medicine_forms = ['정', '캡슐', '주사', '시럽', '연고', '크림', '겔', '패치', '좌제', '분말']
-        
-        if any(form in title for form in medicine_forms):
+        try:
+            # HTML 내용 가져오기
+            html_content = self.api_client.get_html_content(url)
+            if not html_content:
+                return False
+            
+            # BeautifulSoup으로 파싱
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 1. URL 기본 구조 확인
+            if 'terms.naver.com/entry.naver' not in url or 'cid=51000' not in url:
+                return False
+            
+            # 2. 의약품사전 섹션 확인
+            section_wrap = soup.find('div', class_='section_wrap')
+            if not section_wrap:
+                return False
+            
+            # 3. 제목 영역에서 의약품사전 확인
+            headword_title = section_wrap.find('div', class_='headword_title')
+            if not headword_title:
+                return False
+            
+            # 4. cite 태그 내 a 태그에서 '의약품사전' 확인
+            cite_tag = headword_title.find('p', class_='cite')
+            if not cite_tag:
+                return False
+            
+            medicine_dict_link = cite_tag.find('a', string=lambda text: text and '의약품사전' in text)
+            if not medicine_dict_link:
+                return False
+            
+            # 5. 추가 검증: 최소한의 의약품 관련 섹션 존재 여부
+            size_ct_div = soup.find('div', id='size_ct')
+            if not size_ct_div:
+                return False
+            
+            # 섹션 존재 여부 확인
+            sections = size_ct_div.find_all('div', class_='section')
+            if not sections:
+                return False
+            
             return True
         
-        # 용량 표기 체크
-        if any(pattern in title for pattern in ['mg', 'μg', 'g', 'ml', '밀리그램']):
-            return True
+        except Exception as e:
+            logger.error(f"페이지 유효성 검사 중 오류: {url}, {e}")
+            return False
+
+    def process_medicine_data(self, url):
+        """
+        의약품 데이터 세부 추출
         
-        # URL 패턴 체크
-        if '/entry.naver' in item.get('link', '') and 'medicinedic' in item.get('link', ''):
-            return True
+        Args:
+            url: 의약품 페이지 URL
+            
+        Returns:
+            dict: 추출된 의약품 데이터
+        """
+        try:
+            # HTML 내용 가져오기
+            html_content = self.api_client.get_html_content(url)
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 데이터 저장할 딕셔너리
+            medicine_data = {'url': url}
+            
+            # 1. 한글명과 영문명 추출
+            headword_title = soup.find('div', class_='headword_title')
+            if headword_title:
+                # 한글명 (h2 태그)
+                korean_name_tag = headword_title.find('h2', class_='headword')
+                if korean_name_tag:
+                    medicine_data['korean_name'] = korean_name_tag.get_text(strip=True)
+                
+                # 영문명 (span 태그)
+                english_name_tag = headword_title.find('span', class_='word_txt')
+                if english_name_tag:
+                    medicine_data['english_name'] = english_name_tag.get_text(strip=True)
+            
+            # 2. 프로필 정보 추출 (분류, 성상 등)
+            profile_div = soup.find('div', class_='tmp_profile')
+            if profile_div:
+                profile_dts = profile_div.find_all('dt')
+                profile_dds = profile_div.find_all('dd')
+                
+                # 프로필 매핑
+                profile_mapping = {
+                    '분류': 'category',
+                    '구분': 'type',
+                    '업체명': 'company',
+                    '성상': 'appearance',
+                    '보험코드': 'insurance_code',
+                    '모양': 'shape',
+                    '색깔': 'color',
+                    '크기': 'size',
+                    '식별표기': 'identification'
+                }
+                
+                for dt, dd in zip(profile_dts, profile_dds):
+                    dt_text = dt.get_text(strip=True)
+                    dd_text = dd.get_text(strip=True)
+                    
+                    for key, mapped_key in profile_mapping.items():
+                        if key in dt_text:
+                            medicine_data[mapped_key] = dd_text
+                            break
+            
+            # 3. 섹션별 상세 내용 추출
+            size_ct_div = soup.find('div', id='size_ct')
+            if size_ct_div:
+                sections = size_ct_div.find_all('div', class_='section')
+                for section in sections:
+                    h3_tag = section.find('h3')
+                    if not h3_tag:
+                        continue
+                    
+                    section_title = h3_tag.get_text(strip=True)
+                    content_tag = section.find('p', class_='txt')
+                    
+                    if content_tag:
+                        section_content = content_tag.get_text(strip=True)
+                        
+                        # 섹션 제목에 따라 키 매핑
+                        key = self._map_section_title(section_title)
+                        if key:
+                            medicine_data[key] = section_content
+            
+            # 최소한의 데이터 확인
+            if len(medicine_data) <= 1:  # url만 있는 경우
+                logger.warning(f"추출된 데이터 없음: {url}")
+                return None
+            
+            return medicine_data
         
-        return False
+        except Exception as e:
+            logger.error(f"데이터 추출 중 오류 발생: {url}, {e}")
+            return None
+        
+        except Exception as e:
+            logger.error(f"데이터 추출 중 오류 발생: {url}, {e}")
+            return None
+        
+    def _map_section_title(self, title):
+        """
+        섹션 제목을 데이터베이스 키로 매핑
+        
+        Args:
+            title: 섹션 제목
+            
+        Returns:
+            str: 매핑된 키 또는 None
+        """
+        section_mapping = {
+            '성분정보': 'components',
+            '효능효과': 'efficacy',
+            '주의사항': 'precautions',
+            '용법용량': 'dosage',
+            '저장방법': 'storage',
+            '사용기간': 'period'
+        }
+        
+        for key_word, mapped_key in section_mapping.items():
+            if key_word in title:
+                return mapped_key
+        
+        return None
     
+    def process_search_item(self, item):
+        """
+        하나의 검색 결과 항목 처리
+        
+        Args:
+            item: 처리할 검색 결과 항목
+            
+        Returns:
+            dict: 처리 결과 (성공, 실패, 중복, 건너뜀)
+        """
+        try:
+            title = clean_html(item.get('title', ''))
+            url = item.get('link', '')
+            
+            logger.info(f"[시작] 약품 정보 수집: {title} ({url})")
+            
+            # 이미 처리된 URL인지 확인
+            if self.db_manager.is_url_exists(url):
+                logger.info(f"[건너뜀] 이미 처리된 URL: {url}")
+                return {
+                    'success': False,
+                    'reason': 'duplicate_url',
+                    'url': url
+                }
+            
+            # HTML 내용 가져오기
+            try:
+                html_content = self.api_client.get_html_content(url)
+                if not html_content:
+                    logger.warning(f"[실패] HTML 내용을 가져올 수 없음: {url}")
+                    return {
+                        'success': False,
+                        'reason': 'fetch_error',
+                        'url': url
+                    }
+            except requests.exceptions.HTTPError as e:
+                if hasattr(e, 'response') and e.response.status_code == 404:
+                    logger.warning(f"[실패] 페이지를 찾을 수 없음 (404): {url}")
+                    return {
+                        'success': False,
+                        'reason': 'page_not_found',
+                        'url': url
+                    }
+                else:
+                    # 다른 HTTP 에러 재발생
+                    raise
+            
+            # HTML 파싱
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 의약품 정보 파싱
+            medicine_data = self.parser.parse_medicine_detail(soup, url)
+            if not medicine_data:
+                logger.warning(f"[실패] 약품 정보를 파싱할 수 없음: {url}")
+                return {
+                    'success': False,
+                    'reason': 'parse_error',
+                    'url': url
+                }
+            
+            # 데이터 검증
+            validation_result = self.parser.validate_medicine_data(medicine_data)
+            if not validation_result['is_valid']:
+                logger.warning(f"[실패] 약품 데이터 유효성 검사 실패: {url}, 이유: {validation_result['reason']}")
+                return {
+                    'success': False,
+                    'reason': 'validation_error',
+                    'url': url,
+                    'validation_result': validation_result
+                }
+            
+            # 추출된 필드 로깅
+            field_info = []
+            for key in ['korean_name', 'english_name', 'company', 'category']:
+                if key in medicine_data and medicine_data[key]:
+                    value = medicine_data[key]
+                    if len(value) > 30:
+                        value = value[:27] + "..."
+                    field_info.append(f"{key}: {value}")
+            
+            logger.info(f"[추출 정보] {', '.join(field_info)}")
+            
+            # 이미지가 있으면 다운로드
+            if medicine_data.get('image_url'):
+                image_path = download_image(
+                    medicine_data['image_url'], 
+                    medicine_data['korean_name']
+                )
+                if image_path:
+                    medicine_data['image_path'] = str(image_path)
+                    logger.info(f"[이미지] 다운로드 완료: {image_path}")
+            
+            # 데이터베이스에 저장
+            medicine_id = self.db_manager.save_medicine(medicine_data)
+            
+            if medicine_id:
+                # JSON 파일로도 저장
+                json_path = save_medicine_json(medicine_data, medicine_id)
+                
+                logger.info(f"[성공] 약품 정보 저장 완료: {title} (ID: {medicine_id}, JSON: {os.path.basename(json_path) if json_path else 'None'})")
+                return {
+                    'success': True,
+                    'medicine_id': medicine_id,
+                    'korean_name': medicine_data['korean_name'],
+                    'url': url,
+                    'json_path': json_path
+                }
+            else:
+                logger.warning(f"[실패] 약품 정보 저장 실패: {title}")
+                return {
+                    'success': False,
+                    'reason': 'db_error',
+                    'url': url
+                }
+                    
+        except Exception as e:
+            logger.error(f"[오류] 검색 항목 처리 중 예외 발생: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'reason': 'exception',
+                'url': url,
+                'error': str(e)
+            }
+        
     def filter_duplicates(self, items):
         """
         중복 항목 필터링
@@ -125,106 +384,6 @@ class SearchManager:
         
         return filtered_items
     
-    def process_search_item(self, item):
-        """
-        하나의 검색 결과 항목 처리
-        
-        Args:
-            item: 처리할 검색 결과 항목
-            
-        Returns:
-            dict: 처리 결과 (성공, 실패, 중복, 건너뜀)
-        """
-        try:
-            title = clean_html(item.get('title', ''))
-            url = item.get('link', '')
-            
-            logger.info(f"약품 정보 수집: {title} ({url})")
-            
-            # 이미 처리된 URL인지 확인
-            if self.db_manager.is_url_exists(url):
-                logger.info(f"이미 처리된 URL, 건너뜀: {url}")
-                return {
-                    'success': False,
-                    'reason': 'duplicate_url',
-                    'url': url
-                }
-            
-            # HTML 내용 가져오기
-            html_content = self.api_client.get_html_content(url)
-            if not html_content:
-                logger.warning(f"HTML 내용을 가져올 수 없음: {url}")
-                return {
-                    'success': False,
-                    'reason': 'fetch_error',
-                    'url': url
-                }
-            
-            # HTML 파싱
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # 의약품 정보 파싱
-            medicine_data = self.parser.parse_medicine_detail(soup, url)
-            if not medicine_data:
-                logger.warning(f"약품 정보를 파싱할 수 없음: {url}")
-                return {
-                    'success': False,
-                    'reason': 'parse_error',
-                    'url': url
-                }
-            
-            # 데이터 검증
-            validation_result = self.parser.validate_medicine_data(medicine_data)
-            if not validation_result['is_valid']:
-                logger.warning(f"약품 데이터 유효성 검사 실패: {url}, 이유: {validation_result['reason']}")
-                return {
-                    'success': False,
-                    'reason': 'validation_error',
-                    'url': url,
-                    'validation_result': validation_result
-                }
-            
-            # 이미지가 있으면 다운로드
-            if medicine_data.get('image_url'):
-                image_path = download_image(
-                    medicine_data['image_url'], 
-                    medicine_data['korean_name']
-                )
-                if image_path:
-                    medicine_data['image_path'] = str(image_path)
-            
-            # 데이터베이스에 저장
-            medicine_id = self.db_manager.save_medicine(medicine_data)
-            
-            if medicine_id:
-                # JSON 파일로도 저장
-                json_path = save_medicine_json(medicine_data, medicine_id)
-                
-                logger.info(f"약품 정보 저장 완료: {title} (ID: {medicine_id})")
-                return {
-                    'success': True,
-                    'medicine_id': medicine_id,
-                    'korean_name': medicine_data['korean_name'],
-                    'url': url,
-                    'json_path': json_path
-                }
-            else:
-                logger.warning(f"약품 정보 저장 실패: {title}")
-                return {
-                    'success': False,
-                    'reason': 'db_error',
-                    'url': url
-                }
-                
-        except Exception as e:
-            logger.error(f"검색 항목 처리 중 오류 발생: {str(e)}", exc_info=True)
-            return {
-                'success': False,
-                'reason': 'exception',
-                'url': url,
-                'error': str(e)
-            }
-    
     def process_search_results(self, search_results):
         """
         검색 결과 처리
@@ -236,9 +395,12 @@ class SearchManager:
             tuple: (처리된 항목 수, 의약품 항목 수, 중복 항목 수)
         """
         if not search_results or 'items' not in search_results or not search_results['items']:
+            logger.info("[검색 결과] 항목 없음")
             return 0, 0, 0
         
         total_items = len(search_results['items'])
+        logger.info(f"[검색 결과] 총 {total_items}개 항목 처리 시작")
+        
         medicine_items = []
         
         # 의약품 항목 필터링
@@ -246,114 +408,95 @@ class SearchManager:
             if self.is_medicine_item(item):
                 medicine_items.append(item)
         
+        medicine_count = len(medicine_items)
+        logger.info(f"[검색 결과] 총 {medicine_count}개 의약품 항목 식별됨")
+        
         # 중복 항목 필터링
         filtered_items = self.filter_duplicates(medicine_items)
+        unique_count = len(filtered_items)
+        duplicates = medicine_count - unique_count
+        
+        if duplicates > 0:
+            logger.info(f"[검색 결과] {duplicates}개 중복 항목 제외됨, {unique_count}개 항목 처리 진행")
         
         # 통계 업데이트
         self.stats['total_searched'] += total_items
-        self.stats['medicine_items'] += len(medicine_items)
+        self.stats['medicine_items'] += medicine_count
         
         # 결과 처리
         processed_count = 0
+        success_count = 0
+        error_count = 0
+        skip_count = 0
+        
         for item in filtered_items:
             result = self.process_search_item(item)
+            processed_count += 1
             
             if result['success']:
-                processed_count += 1
+                success_count += 1
                 self.stats['saved_items'] += 1
             else:
-                if result['reason'] == 'duplicate_url':
+                reason = result.get('reason', 'unknown')
+                if reason == 'duplicate_url':
+                    skip_count += 1
                     self.stats['skipped_items'] += 1
                 else:
+                    error_count += 1
                     self.stats['error_items'] += 1
         
-        # 중복 항목 수 계산
-        duplicates = len(medicine_items) - len(filtered_items)
+        logger.info(f"[검색 결과] 처리 완료: {success_count}개 성공, {error_count}개 오류, {skip_count}개 건너뜀, 총 {processed_count}개 처리됨")
         
-        return processed_count, len(medicine_items), duplicates
+        return success_count, medicine_count, duplicates
     
-    def fetch_keyword_data(self, keyword, max_pages=None):
+    def fetch_keyword_data(self, start_doc_id, end_doc_id, max_pages=None):
         """
-        특정 키워드에 대한 데이터 수집
+        특정 docId 범위의 의약품 데이터 수집
         
         Args:
-            keyword: 검색 키워드
-            max_pages: 최대 페이지 수 (None이면 설정값 사용)
+            start_doc_id: 시작 docId
+            end_doc_id: 종료 docId
+            max_pages: 최대 페이지 수 (옵션)
             
         Returns:
             tuple: (수집된 항목 수, API 호출 횟수)
         """
-        if max_pages is None:
-            max_pages = MAX_PAGES_PER_KEYWORD
-        
         fetched_items = 0
         api_calls = 0
-        
-        # 이미 완료된 키워드면 건너뜀
-        if keyword in self.completed_keywords:
-            logger.info(f"이미 완료된 키워드, 건너뜀: '{keyword}'")
-            return 0, 0
-        
-        log_section(logger, f"키워드 '{keyword}' 검색 시작")
-        
-        # 예상 결과 수 확인 (API 호출 1회)
-        initial_result = self.api_client.search_medicine(keyword, display=1, start=1)
-        api_calls += 1
-        self.stats['api_calls'] += 1
-        
-        if not initial_result or 'total' not in initial_result:
-            logger.warning(f"키워드 '{keyword}'에 대한 검색 결과가 없거나 API 응답 오류")
-            return 0, api_calls
-        
-        total_results = int(initial_result['total'])
-        logger.info(f"키워드 '{keyword}'에 대한 예상 결과 수: {total_results}")
+        base_url = "https://terms.naver.com/entry.naver?docId={}&cid=51000&categoryId=51000"
         
         # 페이지네이션 계산
-        display = 100  # 한 페이지당 최대 항목 수
-        max_start = min(1 + display * (max_pages - 1), 1 + display * ((total_results - 1) // display))
+        if max_pages:
+            end_doc_id = min(end_doc_id, start_doc_id + max_pages)
         
-        # 각 페이지 처리
-        for start in range(1, max_start + 1, display):
-            # API 호출 한도 체크
+        for doc_id in range(start_doc_id, end_doc_id + 1):
+            # API 한도 체크
             if self.api_client.check_api_limit():
-                logger.warning(f"일일 API 호출 한도에 도달했습니다. 키워드 검색 중단: '{keyword}'")
+                logger.warning("일일 API 호출 한도에 도달했습니다. 수집 중단")
                 break
             
-            logger.info(f"'{keyword}' 검색 결과 {start}~{start+display-1} 요청 중...")
-            result = self.api_client.search_medicine(keyword, display=display, start=start)
-            api_calls += 1
-            self.stats['api_calls'] += 1
+            url = base_url.format(doc_id)
             
-            if not result or 'items' not in result or not result['items']:
-                logger.info(f"'{keyword}'에 대한 추가 결과 없음 또는 마지막 페이지 도달")
-                break
+            try:
+                # 페이지 유효성 확인
+                if self.is_medicine_item(url):
+                    # 데이터 추출
+                    medicine_data = self.process_medicine_data(url)
+                    
+                    if medicine_data:
+                        # 데이터베이스 저장
+                        result = self.db_manager.save_medicine(medicine_data)
+                        
+                        if result:
+                            fetched_items += 1
+                            api_calls += 1
+                    
+                    # 요청 간 지연
+                    time.sleep(REQUEST_DELAY)
             
-            # 검색 결과 처리
-            processed, medicine_count, duplicate_count = self.process_search_results(result)
-            fetched_items += processed
-            
-            logger.info(
-                f"처리 완료: {processed}개 항목 추가, {medicine_count}개 의약품 항목 감지, {duplicate_count}개 중복 항목 건너뜀"
-            )
-            
-            # 체크포인트 저장 (CHECKPOINT_INTERVAL 간격으로)
-            if self.stats['saved_items'] % CHECKPOINT_INTERVAL == 0 and self.stats['saved_items'] > 0:
-                checkpoint_data = {
-                    'timestamp': datetime.now().isoformat(),
-                    'current_keyword': keyword,
-                    'current_start': start + display,
-                    'stats': self.stats
-                }
-                save_checkpoint(checkpoint_data)
-            
-            # 페이지 간 딜레이
-            time.sleep(REQUEST_DELAY)
+            except Exception as e:
+                logger.error(f"문서 ID {doc_id} 처리 중 오류: {e}")
         
-        # 키워드 완료 표시
-        self.completed_keywords.add(keyword)
-        save_completed_keyword(keyword, self.completed_keywords_file)
-        
-        logger.info(f"키워드 '{keyword}' 검색 완료: {fetched_items}개 수집, API 호출 {api_calls}회")
         return fetched_items, api_calls
     
     async def fetch_keyword_data_async(self, keyword, max_pages=None):
@@ -373,47 +516,67 @@ class SearchManager:
     
     def fetch_all_keywords(self, keywords, max_pages=None):
         """
-        여러 키워드에 대한 데이터 수집
+        키워드 리스트 대신 docId 범위로 변경
         
         Args:
-            keywords: 검색 키워드 리스트
-            max_pages: 키워드당 최대 페이지 수
+            keywords: 키워드 리스트 또는 시작 docId
+            max_pages: 최대 페이지 수 또는 종료 docId
             
         Returns:
             dict: 수집 통계
         """
-        total_fetched = 0
-        total_calls = 0
+        # 기존 키워드 방식 대응
+        if isinstance(keywords, list):
+            # 키워드 방식은 더미 구현
+            logger.warning("키워드 방식은 더 이상 지원되지 않습니다. docId 범위를 사용하세요.")
+            return {
+                'total_fetched': 0,
+                'total_calls': 0,
+                'keywords_processed': 0,
+                'keywords_total': len(keywords),
+                'duration_seconds': 0.0  # 추가
+            }
+        
+        # docId 범위로 처리
+        start_doc_id = keywords  # 첫 번째 인자를 시작 docId로 처리
+        
+        # 두 번째 인자가 max_pages인지 end_doc_id인지 구분
+        if isinstance(max_pages, int):
+            # max_pages로 간주
+            end_doc_id = start_doc_id + max_pages
+        else:
+            # end_doc_id로 간주
+            end_doc_id = max_pages
         
         # 시작 시간 기록
         start_time = datetime.now()
         self.stats['start_time'] = start_time
         
-        log_section(logger, f"전체 키워드 수집 시작 (총 {len(keywords)}개)")
+        log_section(logger, f"docId 범위 수집 시작 ({start_doc_id}~{end_doc_id})")
         
-        # 각 키워드별로 수집
-        for i, keyword in enumerate(keywords):
-            # API 한도 체크
-            if self.api_client.check_api_limit():
-                logger.warning(f"일일 API 호출 한도에 도달했습니다. 수집 중단 (처리된 키워드: {i}/{len(keywords)})")
-                break
-            
-            fetched, calls = self.fetch_keyword_data(keyword, max_pages)
-            total_fetched += fetched
-            total_calls += calls
-            
-            # 진행상황 로깅
-            logger.info(f"키워드 진행: {i+1}/{len(keywords)} ({(i+1)/len(keywords)*100:.1f}%)")
+        # 단일 범위에 대해 데이터 수집
+        total_fetched = 0
+        total_calls = 0
+        
+        # URL 수집
+        valid_urls = self.fetch_medicine_urls(start_doc_id, end_doc_id)
+        
+        # 데이터 수집
+        if valid_urls:
+            crawl_stats = self.fetch_medicine_data_from_urls(valid_urls)
+            total_fetched = crawl_stats.get('saved_items', 0)
+            total_calls = crawl_stats.get('processed_urls', 0)
         
         # 종료 시간 및 소요 시간 계산
         end_time = datetime.now()
         duration = end_time - start_time
+        duration_seconds = duration.total_seconds()
         
         # 최종 통계 출력
         log_section(logger, "수집 완료 통계")
         
         logger.info(f"총 수집 항목: {total_fetched}개")
-        logger.info(f"총 API 호출: {total_calls}회")
+        logger.info(f"총 처리 URL: {total_calls}회")
         logger.info(f"시작 시간: {start_time}")
         logger.info(f"종료 시간: {end_time}")
         logger.info(f"소요 시간: {duration}")
@@ -422,15 +585,278 @@ class SearchManager:
         final_stats = {
             'total_fetched': total_fetched,
             'total_calls': total_calls,
-            'keywords_processed': i + 1 if i < len(keywords) else len(keywords),
-            'keywords_total': len(keywords),
+            'duration_seconds': duration_seconds,  # 추가
             'start_time': start_time.isoformat(),
             'end_time': end_time.isoformat(),
-            'duration_seconds': duration.total_seconds(),
             **self.stats
         }
         
         return final_stats
+
+    def fetch_medicine_urls(self, start_doc_id, end_doc_id, max_retries=3):
+        """
+        특정 docId 범위의 의약품 페이지 URL 수집
+        
+        Args:
+            start_doc_id: 시작 docId
+            end_doc_id: 종료 docId
+            max_retries: 재시도 최대 횟수
+            
+        Returns:
+            list: 유효한 의약품 페이지 URL 리스트
+        """
+        valid_urls = []
+        base_url = "https://terms.naver.com/entry.naver?docId={}&cid=51000&categoryId=51000"
+        
+        # 통계 초기화
+        urls_checked = 0
+        valid_url_count = 0
+        
+        for doc_id in range(start_doc_id, end_doc_id + 1):
+            # API 한도 체크
+            if self.api_client.check_api_limit():
+                logger.warning("일일 API 호출 한도에 도달했습니다. URL 수집 중단")
+                break
+            
+            url = base_url.format(doc_id)
+            urls_checked += 1
+            
+            # 재시도 메커니즘 추가
+            for attempt in range(max_retries):
+                try:
+                    # 페이지 유효성 확인
+                    if self.is_medicine_item(url):
+                        valid_urls.append(url)
+                        valid_url_count += 1
+                        break
+                except Exception as e:
+                    logger.warning(f"URL 확인 시도 실패 ({attempt+1}/{max_retries}): {url}, {e}")
+                    
+                    # 마지막 재시도에서도 실패하면 건너뜀
+                    if attempt == max_retries - 1:
+                        logger.error(f"URL 확인 완전 실패: {url}")
+                
+                # 요청 간 지연
+                time.sleep(REQUEST_DELAY)
+            
+            # 로깅 및 진행상황 표시
+            if urls_checked % 100 == 0:
+                logger.info(f"진행 상황: {urls_checked}개 URL 확인, 유효 URL {valid_url_count}개")
+        
+        # 최종 로깅
+        logger.info(f"총 {urls_checked}개 URL 중 {valid_url_count}개 유효 URL 수집")
+        
+        return valid_urls
+    
+    def fetch_medicine_list_from_search(self, start_page=1, max_pages=10):
+        """
+        네이버 의약품 검색 페이지에서 의약품 목록 수집
+        
+        Args:
+            start_page: 시작 페이지 번호
+            max_pages: 최대 수집 페이지 수
+            
+        Returns:
+            dict: 수집 통계
+        """
+        base_url = "https://terms.naver.com/medicineSearch.naver?page={}"
+        medicine_urls = []
+        
+        # 통계 초기화
+        start_time = datetime.now()
+        total_pages_checked = 0
+        total_medicine_links = 0
+        
+        for page_num in range(start_page, start_page + max_pages):
+            # API 한도 체크
+            if self.api_client.check_api_limit():
+                logger.warning("일일 API 호출 한도에 도달했습니다. 수집 중단")
+                break
+            
+            try:
+                # 페이지 URL 생성
+                url = base_url.format(page_num)
+                
+                # HTML 내용 가져오기
+                html_content = self.api_client.get_html_content(url)
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # 의약품 링크 찾기 (네이버 의약품사전 링크)
+                medicine_links = soup.find_all('a', href=lambda href: 
+                    href and 'terms.naver.com/entry.naver' in href and 'cid=51000' in href)
+                
+                # 링크 수집
+                for link in medicine_links:
+                    full_link = f"https://terms.naver.com{link['href']}" if not link['href'].startswith('http') else link['href']
+                    medicine_urls.append(full_link)
+                
+                total_pages_checked += 1
+                total_medicine_links += len(medicine_links)
+                
+                # 페이지 간 지연
+                time.sleep(REQUEST_DELAY)
+                
+                # 로깅
+                logger.info(f"페이지 {page_num} 처리: {len(medicine_links)}개 링크 발견")
+                
+                # 더 이상 의약품 링크가 없으면 중단
+                if not medicine_links:
+                    logger.info("더 이상 의약품 링크가 없습니다. 수집 중단")
+                    break
+            
+            except Exception as e:
+                logger.error(f"페이지 {page_num} 처리 중 오류: {e}")
+        
+        # 수집된 URL로 데이터 추출
+        crawl_stats = self.fetch_medicine_data_from_urls(medicine_urls)
+        
+        # 최종 통계 계산
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        final_stats = {
+            'total_pages_checked': total_pages_checked,
+            'total_medicine_links': total_medicine_links,
+            'total_fetched': crawl_stats.get('saved_items', 0),
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'duration_seconds': duration.total_seconds()
+        }
+        
+        logger.info("의약품 검색 페이지 크롤링 완료")
+        logger.info(f"총 확인 페이지: {total_pages_checked}")
+        logger.info(f"총 발견 링크: {total_medicine_links}")
+        logger.info(f"총 수집 항목: {final_stats['total_fetched']}")
+        
+        return final_stats
+
+# main.py의 search_all_keywords 함수 수정
+def search_all_keywords(search_manager, max_pages, limit=None):
+    """
+    의약품 데이터 수집
+    
+    Args:
+        search_manager: SearchManager 인스턴스
+        max_pages: 검색 페이지 수
+        limit: 무시됨 (호환성을 위해 유지)
+    """
+    # 의약품 검색 페이지에서 데이터 수집
+    stats = search_manager.fetch_medicine_list_from_search(start_page=1, max_pages=max_pages)
+    
+    # 결과 출력
+    print("\n검색 완료:")
+    print(f"총 확인 페이지: {stats['total_pages_checked']}개")
+    print(f"총 발견 링크: {stats['total_medicine_links']}개")
+    print(f"총 수집 항목: {stats['total_fetched']}개")
+    print(f"소요 시간: {stats['duration_seconds']:.1f}초\n")
+    
+    return stats
+
+    def fetch_medicine_data_from_urls(self, urls, max_items=None, max_retries=3):
+        """
+        URL 리스트에서 의약품 데이터 수집
+        
+        Args:
+            urls: 의약품 페이지 URL 리스트
+            max_items: 최대 수집 항목 수 (옵션)
+            max_retries: 재시도 최대 횟수
+            
+        Returns:
+            dict: 수집 통계
+        """
+        # 통계 초기화
+        start_time = datetime.now()
+        total_urls = len(urls)
+        processed_urls = 0
+        saved_items = 0
+        
+        # 최대 수집 항목 제한
+        if max_items:
+            urls = urls[:max_items]
+        
+        # 결과 저장 리스트
+        medicine_data_list = []
+        
+        for url in urls:
+            # API 한도 체크
+            if self.api_client.check_api_limit():
+                logger.warning("일일 API 호출 한도에 도달했습니다. 데이터 수집 중단")
+                break
+            
+            # 재시도 메커니즘 추가
+            for attempt in range(max_retries):
+                try:
+                    # 데이터 추출
+                    medicine_data = self.process_medicine_data(url)
+                    
+                    if medicine_data:
+                        # 데이터베이스에 저장
+                        medicine_id = self.db_manager.save_medicine(medicine_data)
+                        
+                        if medicine_id:
+                            medicine_data_list.append(medicine_data)
+                            saved_items += 1
+                        break
+                    else:
+                        logger.warning(f"데이터 추출 실패 ({attempt+1}/{max_retries}): {url}")
+                
+                except Exception as e:
+                    logger.error(f"URL 처리 시도 실패 ({attempt+1}/{max_retries}): {url}, {e}")
+                    
+                    # 마지막 재시도에서도 실패하면 건너뜀
+                    if attempt == max_retries - 1:
+                        logger.error(f"URL 처리 완전 실패: {url}")
+                
+                # 요청 간 지연
+                time.sleep(REQUEST_DELAY)
+            
+            processed_urls += 1
+            
+            # 진행상황 로깅
+            if processed_urls % 50 == 0:
+                logger.info(f"진행 상황: {processed_urls}/{total_urls} URL 처리, {saved_items}개 데이터 저장")
+        
+        # 종료 시간 및 소요 시간 계산
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        # 최종 통계
+        final_stats = {
+            'total_urls': total_urls,
+            'processed_urls': processed_urls,
+            'saved_items': saved_items,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'duration_seconds': duration.total_seconds()
+        }
+        
+        # 최종 로깅
+        logger.info("데이터 수집 완료")
+        logger.info(f"총 URL: {total_urls}, 처리된 URL: {processed_urls}, 저장된 항목: {saved_items}")
+        logger.info(f"소요 시간: {duration}")
+        
+        return final_stats
+
+    # 사용 예시 메서드 추가
+    def crawl_medicine_data(self, start_doc_id, end_doc_id, max_items=None):
+        """
+        의약품 데이터 통합 크롤링 메서드
+        
+        Args:
+            start_doc_id: 시작 docId
+            end_doc_id: 종료 docId
+            max_items: 최대 수집 항목 수 (옵션)
+            
+        Returns:
+            dict: 크롤링 통계
+        """
+        # 1. URL 수집
+        valid_urls = self.fetch_medicine_urls(start_doc_id, end_doc_id)
+        
+        # 2. 수집된 URL에서 데이터 추출
+        crawl_stats = self.fetch_medicine_data_from_urls(valid_urls, max_items)
+        
+        return crawl_stats
     
     def fetch_single_url(self, url):
         """
@@ -528,3 +954,4 @@ class SearchManager:
                 'url': url,
                 'error': str(e)
             }
+    

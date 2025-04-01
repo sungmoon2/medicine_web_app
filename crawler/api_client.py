@@ -85,7 +85,7 @@ class NaverAPIClient:
         return self.today_api_calls >= DAILY_API_LIMIT
     
     @retry(max_tries=MAX_RETRIES, delay_seconds=REQUEST_DELAY, backoff_factor=2, 
-           exceptions=(requests.RequestException, urllib.error.URLError))
+       exceptions=(requests.RequestException, urllib.error.URLError))
     def search_medicine(self, keyword, display=None, start=1):
         """
         네이버 API를 사용하여 약품 검색
@@ -109,12 +109,12 @@ class NaverAPIClient:
             logger.warning(f"일일 API 호출 한도({DAILY_API_LIMIT}회)에 도달했습니다.")
             return None
         
-        # 의약품으로 한정하기 위해 키워드에 '의약품 사전' 추가
-        search_query = f"{keyword} 의약품 사전"
+        # 검색어 구성
+        search_query = f"{keyword} 의약품"
         encoded_query = urllib.parse.quote(search_query)
         
-        # API URL 구성
-        url = f"https://openapi.naver.com/v1/search/encyclop.json?query={encoded_query}&display={display}&start={start}"
+        # 'encyclop.json' 대신 'encyc.json' 사용
+        url = f"https://openapi.naver.com/v1/search/encyc.json?query={encoded_query}&display={display}&start={start}"
         
         # 요청 헤더 설정
         headers = {
@@ -183,6 +183,13 @@ class NaverAPIClient:
             }
             
             response = self.session.get(url, headers=headers, timeout=15)
+            
+            # 404 오류는 특별히 처리하여 retry하지 않음
+            if response.status_code == 404:
+                logger.error(f"URL 접속 중 오류 발생: 404 Client Error: 404 for url: {url}")
+                # retry 데코레이터가 감싸도 재시도하지 않도록 HTTP 오류 발생시킴
+                response.raise_for_status()
+            
             response.raise_for_status()
             
             # 인코딩 확인 및 설정

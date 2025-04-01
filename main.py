@@ -92,25 +92,24 @@ def init_components():
     return db_manager, api_client, parser, search_manager
 
 def search_all_keywords(search_manager, max_pages, limit=None):
-    """모든 키워드로 검색"""
-    log_section(logger, "모든 키워드로 검색 시작")
+    """
+    의약품 데이터 수집
     
-    # 키워드 생성
-    keywords = generate_keywords_for_medicines()
+    Args:
+        search_manager: SearchManager 인스턴스
+        max_pages: 최대 페이지 수 또는 종료 docId
+        limit: 무시됨 (호환성을 위해 유지)
+    """
+    # 기본 시작 docId 설정
+    start_doc_id = 2141123
     
-    if limit and limit > 0:
-        keywords = keywords[:limit]
-    
-    logger.info(f"생성된 키워드: {len(keywords)}개")
-    
-    # 검색 실행
-    stats = search_manager.fetch_all_keywords(keywords, max_pages)
+    # stats를 직접 docId 범위로 호출
+    stats = search_manager.fetch_all_keywords(start_doc_id, max_pages)
     
     # 결과 출력
     print("\n검색 완료:")
     print(f"총 수집 항목: {stats['total_fetched']}개")
-    print(f"총 API 호출: {stats['total_calls']}회")
-    print(f"처리된 키워드: {stats['keywords_processed']}/{stats['keywords_total']}")
+    print(f"총 처리 URL: {stats['total_calls']}회")
     print(f"소요 시간: {stats['duration_seconds']:.1f}초\n")
     
     return stats
@@ -359,9 +358,10 @@ def main():
         return 0
         
     except KeyboardInterrupt:
-        print("\n\n사용자에 의해 프로그램이 중단되었습니다.")
-        logger.warning("사용자에 의해 프로그램이 중단되었습니다.")
-        return 1
+        print("\n\n프로그램이 사용자에 의해 중단되었습니다 (Ctrl+C)")
+        logger.warning("사용자에 의해 프로그램이 중단되었습니다")
+        # 모든 스레드와 리소스를 정리
+        sys.exit(0)  # 명시적으로 프로그램 종료
         
     except Exception as e:
         print(f"\n\n오류 발생: {e}")

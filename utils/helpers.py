@@ -351,37 +351,10 @@ def save_completed_keyword(keyword, file_path):
         return False
 
 def generate_keywords_for_medicines():
-    """
-    의약품 검색에 특화된 키워드 생성
-    
-    Returns:
-        list: 의약품 검색 키워드 리스트
-    """
     keywords = []
     
-    # 한글 초성 (모든 한글 약품명 포괄)
-    keywords.extend(["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"])
-    
-    # 영문 알파벳
-    keywords.extend(list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-    
-    # 숫자
-    keywords.extend([str(i) for i in range(10)])
-    
-    # 제형별 검색
-    form_keywords = [
-        "정", "캡슐", "주사", "시럽", "연고", "크림", "겔", "패치", "좌제", "분말", 
-        "주", "서방정", "액", "과립", "현탁액", "환", "점안액", "스프레이", "흡입제"
-    ]
-    keywords.extend(form_keywords)
-    
-    # 효능별 분류
-    therapeutic_effects = [
-        "진통제", "해열제", "항생제", "소화제", "변비약", "설사약", "고혈압약", "당뇨약", 
-        "고지혈증약", "항히스타민제", "항우울제", "수면제", "진정제", "비타민", "철분제",
-        "기관지확장제", "스테로이드", "피부질환", "안약", "항암제"
-    ]
-    keywords.extend(therapeutic_effects)
+    # 의약품 분류별로 의미 있는 키워드 사용
+    keywords.extend(["감기약", "진통제", "소화제", "항생제", "비타민"])
     
     # 인기 약품 및 브랜드명
     popular_brands = [
@@ -391,5 +364,12 @@ def generate_keywords_for_medicines():
     ]
     keywords.extend(popular_brands)
     
-    # 중복 제거
+    # 제약회사 이름
+    companies = [
+        "동아제약", "유한양행", "녹십자", "한미약품", "종근당", 
+        "대웅제약", "일동제약", "보령제약", "SK케미칼", "삼성바이오로직스"
+    ]
+    keywords.extend(companies)
+    
+    # 중복 제거 후 반환
     return list(set(keywords))
