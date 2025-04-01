@@ -1,5 +1,16 @@
 import axios from 'axios';
 
+export const fetchUrlContent = async (url: string): Promise<string> => {
+  try {
+    // FastAPI 백엔드의 엔드포인트 호출
+    const response = await axios.get(`http://localhost:8000/api/medicine/url?url=${encodeURIComponent(url)}`);
+    return response.data.html_preview || '';
+  } catch (error) {
+    console.error('URL 콘텐츠 가져오기 실패:', error);
+    return '';
+  }
+};
+
 export interface SearchResult {
   title: string;
   link: string;
@@ -19,15 +30,5 @@ export const fetchNaverSearchResults = async (keyword: string): Promise<SearchRe
   } catch (error) {
     console.error('검색 중 오류:', error);
     return [];
-  }
-};
-
-export const fetchUrlContent = async (url: string): Promise<string> => {
-  try {
-    // 임시 더미 데이터
-    return '<html><body>의약품 정보</body></html>';
-  } catch (error) {
-    console.error('URL 콘텐츠 가져오기 실패:', error);
-    return '';
   }
 };
