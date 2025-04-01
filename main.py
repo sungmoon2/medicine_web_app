@@ -28,6 +28,13 @@ from utils.helpers import create_keyword_list, generate_keywords_for_medicines
 from utils.file_handler import save_checkpoint, load_checkpoint
 from utils.logger import get_logger, log_section, log_exception
 
+import logging
+
+# 로그 레벨 설정
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+
 # 로거 설정
 logger = get_logger(__name__, LOG_FILE, LOG_LEVEL)
 
@@ -48,32 +55,84 @@ def validate_environment():
         sys.exit(1)
 
 def parse_arguments():
-    """명령줄 인자 파싱"""
+    """
+    명령줄 인자 파싱
+    
+    # 수정: 기존 parse_arguments 메서드에 DocID 관련 옵션 추가
+    # 주요 변경: 새로운 크롤링 옵션 지원
+    
+    Returns:
+        argparse.Namespace: 파싱된 명령줄 인자
+    """
     parser = argparse.ArgumentParser(description='네이버 의약품 정보 크롤러')
     
-    # 기본 작동 모드
+    # 기존 모드 그룹 유지
     mode_group = parser.add_mutually_exclusive_group()
+    
+    # 기존 옵션들 (모두 유지)
     mode_group.add_argument('--all', action='store_true', help='모든 키워드로 검색')
     mode_group.add_argument('--keyword', help='특정 키워드로 검색')
     mode_group.add_argument('--url', help='특정 URL에서 정보 수집')
     mode_group.add_argument('--stats', action='store_true', help='데이터베이스 통계 출력')
     mode_group.add_argument('--export', action='store_true', help='수집된 데이터를 JSON으로 내보내기')
     mode_group.add_argument('--continue', dest='continue_last', action='store_true', help='마지막 체크포인트에서 계속')
-    mode_group.add_argument('--retry-failed', action='store_true', help='실패한 URL 재시도')
-    
-    # 옵션
-    parser.add_argument('--max-pages', type=int, default=MAX_PAGES_PER_KEYWORD, help='키워드당 최대 페이지 수')
-    parser.add_argument('--checkpoint', type=str, help='특정 체크포인트 파일 사용')
-    parser.add_argument('--output', type=str, help='내보내기 파일 경로')
-    parser.add_argument('--limit', type=int, help='검색할 최대 키워드 수')
-    
-    # 파싱
+    # DocID 관련 새로운 옵션 추가
+    mode_group.add_argument(
+        '--docid-range', 
+        type=str, 
+        help='시작,종료 DocID 범위 지정 (예: 1000,2000)'
+    )
+    mode_group.add_argument(
+        '--find-docid-range', 
+        action='store_true', 
+        help='자동으로 의약품사전 DocID 범위 찾기'
+    )
+    mode_group.add_argument(
+        '--retry-failed', 
+        action='store_true', 
+        help='실패한 URL 재시도'
+    )
+
+    # 기존 및 새로운 옵션들
+    parser.add_argument(
+        '--max-pages', 
+        type=int, 
+        default=MAX_PAGES_PER_KEYWORD, 
+        help='키워드당 최대 페이지 수'
+    )
+    parser.add_argument(
+        '--checkpoint', 
+        type=str, 
+        help='특정 체크포인트 파일 사용'
+    )
+    parser.add_argument(
+        '--output', 
+        type=str, 
+        help='내보내기 파일 경로'
+    )
+    parser.add_argument(
+        '--limit', 
+        type=int, 
+        help='검색할 최대 키워드 수'
+    )
+    parser.add_argument(
+        '--max-items', 
+        type=int, 
+        default=None, 
+        help='최대 수집 항목 수 제한'
+    )
+
+    # 인자 파싱
     args = parser.parse_args()
-    
-    # 기본값 설정
-    if not any([args.all, args.keyword, args.url, args.stats, args.export, args.continue_last, args.retry_failed]):
+
+    # 기본값 설정 (기존 로직 유지)
+    if not any([
+        args.all, args.keyword, args.url, args.stats, 
+        args.export, args.continue_last, args.retry_failed,
+        args.docid_range, args.find_docid_range
+    ]):
         args.all = True  # 기본적으로 모든 키워드 검색
-    
+
     return args
 
 def init_components():
@@ -349,7 +408,12 @@ def retry_failed_urls():
     return stats
 
 def main():
-    """메인 함수"""
+    """
+    메인 함수
+    
+    # 수정: DocID 기반 크롤링 옵션 추가
+    # 새로운 크롤링 전략 통합
+    """
     try:
         # 시작 시간
         start_time = datetime.now()
@@ -362,35 +426,64 @@ def main():
         
         # 인자 파싱
         args = parse_arguments()
+        print(args)
         
         # 컴포넌트 초기화
         db_manager, api_client, parser, search_manager = init_components()
         
-        # 명령에 따라 실행
-        if args.retry_failed:
+        # 크롤링 옵션에 따른 분기
+        if args.docid_range:
+            # 사용자 지정 DocID 범위로 크롤링
+            try:
+                start_docid, end_docid = map(int, args.docid_range.split(','))
+                logger.info(f"사용자 지정 DocID 범위: {start_docid} ~ {end_docid}")  # 로그 추가
+                stats = search_manager.fetch_medicine_docid_range(
+                    start_docid, 
+                    end_docid, 
+                    max_items=args.max_items
+                        )
+            except ValueError:
+                logger.error("잘못된 DocID 범위 형식. 'start,end' 형태로 입력하세요.")
+                return 1
+        
+        elif args.find_docid_range:
+            # 자동으로 DocID 범위 찾기
+            start_docid, end_docid = search_manager.find_medicine_docid_range()
+            
+            if start_docid and end_docid:
+                stats = search_manager.fetch_medicine_docid_range(
+                    start_docid, 
+                    end_docid, 
+                    max_items=args.max_items
+                )
+            else:
+                logger.error("DocID 범위를 찾을 수 없습니다.")
+                return 1
+        
+        elif args.retry_failed:
             # 실패한 URL 재시도
             retry_failed_urls()
-            
+        
         elif args.all:
             # 모든 키워드로 검색
             search_all_keywords(search_manager, args.max_pages, args.limit)
-            
+        
         elif args.keyword:
             # 단일 키워드로 검색
             search_single_keyword(search_manager, args.keyword, args.max_pages)
-            
+        
         elif args.url:
             # 단일 URL 처리
             process_single_url(search_manager, args.url)
-            
+        
         elif args.stats:
             # 데이터베이스 통계 출력
             show_database_stats(db_manager)
-            
+        
         elif args.export:
             # 데이터 내보내기
             export_data(db_manager, args.output)
-            
+        
         elif args.continue_last:
             # 체크포인트에서 계속
             continue_from_checkpoint(search_manager, args.checkpoint)
@@ -399,6 +492,7 @@ def main():
         end_time = datetime.now()
         duration = end_time - start_time
         
+        # 로깅
         log_section(logger, "프로그램 종료")
         logger.info(f"시작 시간: {start_time}")
         logger.info(f"종료 시간: {end_time}")
@@ -410,13 +504,13 @@ def main():
     except KeyboardInterrupt:
         print("\n\n프로그램이 사용자에 의해 중단되었습니다 (Ctrl+C)")
         logger.warning("사용자에 의해 프로그램이 중단되었습니다")
-        # 모든 스레드와 리소스를 정리
-        sys.exit(0)  # 명시적으로 프로그램 종료
+        sys.exit(0)
         
     except Exception as e:
         print(f"\n\n오류 발생: {e}")
         log_exception(logger, e, "프로그램 실행 중 오류 발생")
         return 1
 
+# main 함수 실행 부분
 if __name__ == "__main__":
     sys.exit(main())

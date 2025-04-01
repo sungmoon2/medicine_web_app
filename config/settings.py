@@ -146,3 +146,13 @@ MEDICINE_SCHEMA = {
     'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
     'data_hash': 'TEXT'
 }
+MEDICINE_PATTERNS.update({
+    'size_ct_class': ['size_ct_v2'],
+    'profile_wrap_class': ['profile_wrap'],
+    'section_title_class': ['section'],
+    'content_selectors': [
+        'div.content',
+        'p.txt',
+        'div.txt'
+    ]
+})

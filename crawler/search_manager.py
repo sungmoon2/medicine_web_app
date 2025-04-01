@@ -5,20 +5,22 @@ import os
 import time
 import asyncio
 import aiohttp
+import hashlib
+
+from urllib.parse import urljoin
+from datetime import datetime
 from bs4 import BeautifulSoup
 from datetime import datetime
 from pathlib import Path
+
 from config.settings import (
     MAX_PAGES_PER_KEYWORD, CHECKPOINT_INTERVAL,
     CHECKPOINT_DIR, REQUEST_DELAY
 )
+
 from config.settings import ROOT_DIR
-
-import urllib.parse
-
-
 from bs4 import BeautifulSoup
-from utils.helpers import clean_html, save_completed_keyword, load_completed_keywords
+from utils.helpers import clean_html, generate_safe_filename, save_completed_keyword, load_completed_keywords
 from utils.file_handler import save_checkpoint, download_image, save_medicine_json
 from utils.logger import get_logger, log_section
 from utils.helpers import clean_html, save_completed_keyword, load_completed_keywords, generate_keywords_for_medicines
@@ -1152,6 +1154,141 @@ class SearchManager:
         logger.info(f"소요 시간: {duration}")
         
         return final_stats
+    
+    def find_medicine_docid_range(self, max_search_range=10000000):
+        """
+        의약품사전의 DocID 범위를 찾는 메서드
+        
+        # 추가: search_manager.py에 새로운 메서드로 추가
+        # 목적: 의약품사전의 유효한 DocID 범위 자동 탐색
+        # 사용 방법: 클래스 인스턴스에서 직접 호출 가능
+        
+        Args:
+            max_search_range: 최대 검색 범위 (기본값: 10,000,000)
+        
+        Returns:
+            tuple: (시작 DocID, 종료 DocID) 또는 (None, None)
+        """
+        def is_valid_medicine_docid(docid):
+            """단일 DocID의 유효성 검사"""
+            url = f"https://terms.naver.com/entry.naver?docId={docid}&cid=51000&categoryId=51000"
+            
+            try:
+                html_content = self.api_client.get_html_content(url)
+                if not html_content:
+                    return False
+                
+                soup = BeautifulSoup(html_content, 'html.parser')
+                return self.parser.is_medicine_dictionary(soup, url)
+            
+            except Exception as e:
+                logger.error(f"DocID {docid} 검증 중 오류: {e}")
+                return False
+        
+        # 이진 탐색으로 DocID 범위 찾기
+        start_docid, end_docid = None, None
+        
+        # 시작 DocID 찾기
+        left, right = 1, max_search_range
+        while left <= right:
+            mid = (left + right) // 2
+            if is_valid_medicine_docid(mid):
+                start_docid = mid
+                right = mid - 1
+            else:
+                left = mid + 1
+        
+        # 종료 DocID 찾기
+        if start_docid is not None:
+            left, right = start_docid, max_search_range
+            while left <= right:
+                mid = (left + right) // 2
+                if is_valid_medicine_docid(mid):
+                    end_docid = mid
+                    left = mid + 1
+                else:
+                    right = mid - 1
+        
+        if start_docid is None or end_docid is None:
+            logger.error("의약품사전 DocID 범위를 찾을 수 없습니다.")
+            return None, None
+        
+        logger.info(f"의약품사전 DocID 범위 발견: {start_docid} ~ {end_docid}")
+        return start_docid, end_docid
+    
+    def fetch_medicine_docid_range(self, start_docid, end_docid, max_items=None):
+        """
+        DocID 범위의 의약품 데이터 수집
+        
+        # 추가: search_manager.py에 새로운 메서드로 추가
+        # 목적: 특정 DocID 범위의 의약품 데이터 크롤링
+        # 사용 방법: find_medicine_docid_range() 메서드와 연계 사용 가능
+        
+        Args:
+            start_docid: 시작 DocID
+            end_docid: 종료 DocID
+            max_items: 최대 수집 항목 수 (옵션)
+        
+        Returns:
+            dict: 크롤링 통계
+        """
+        # 시작 시간 기록
+        start_time = datetime.now()
+        
+        # 수집할 URL 생성
+        base_url = "https://terms.naver.com/entry.naver?docId={}&cid=51000&categoryId=51000"
+        valid_urls = []
+        
+        # DocID 범위 순회
+        for docid in range(start_docid, end_docid + 1):
+            # API 호출 한도 체크
+            if self.api_client.check_api_limit():
+                logger.warning("일일 API 호출 한도에 도달했습니다. 수집 중단")
+                break
+            
+            # 현재 DocID의 URL 생성
+            current_url = base_url.format(docid)
+            
+            try:
+                # HTML 내용 가져오기
+                html_content = self.api_client.get_html_content(current_url)
+                
+                if not html_content:
+                    logger.warning(f"DocID {docid}의 HTML 내용을 가져올 수 없음")
+                    continue
+                
+                # BeautifulSoup으로 파싱
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # 의약품사전 페이지 검증
+                if self.parser.is_medicine_dictionary(soup, current_url):
+                    valid_urls.append(current_url)
+                    
+                    # 최대 수집 항목 수 제한
+                    if max_items and len(valid_urls) >= max_items:
+                        break
+            
+            except Exception as e:
+                logger.error(f"DocID {docid} 처리 중 오류: {e}")
+        
+        # 수집된 URL로 의약품 데이터 추출
+        crawl_stats = self.fetch_medicine_data_from_urls(valid_urls)
+        
+        # 종료 시간 및 통계 계산
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        # 최종 통계 업데이트
+        crawl_stats.update({
+            'start_docid': start_docid,
+            'end_docid': end_docid,
+            'total_docids_checked': end_docid - start_docid + 1,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'duration_seconds': duration.total_seconds()
+        })
+        
+        return crawl_stats
 
     # 사용 예시 메서드 추가
     def crawl_medicine_data(self, start_doc_id, end_doc_id, max_items=None):

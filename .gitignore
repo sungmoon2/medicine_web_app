@@ -48,3 +48,4 @@ wheels/
 node_modules
 
 debug_html/
+debug_data/
