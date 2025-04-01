@@ -11,6 +11,9 @@ from config.settings import (
     MAX_PAGES_PER_KEYWORD, CHECKPOINT_INTERVAL,
     CHECKPOINT_DIR, REQUEST_DELAY
 )
+import urllib.parse
+
+from bs4 import BeautifulSoup
 from utils.helpers import clean_html, save_completed_keyword, load_completed_keywords
 from utils.file_handler import save_checkpoint, download_image, save_medicine_json
 from utils.logger import get_logger, log_section
@@ -123,6 +126,10 @@ class SearchManager:
         try:
             # HTML 내용 가져오기
             html_content = self.api_client.get_html_content(url)
+            if not html_content:
+                logger.warning(f"HTML 내용을 가져올 수 없음: {url}")
+                return None
+            
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # 데이터 저장할 딕셔너리
@@ -189,6 +196,22 @@ class SearchManager:
                         if key:
                             medicine_data[key] = section_content
             
+            # 4. 이미지 URL 추출
+            try:
+                image_url = self._extract_medicine_image_url(soup)
+                if image_url:
+                    medicine_data['image_url'] = image_url
+                    
+                    # 이미지 다운로드
+                    image_path = download_image(
+                        image_url, 
+                        medicine_data.get('korean_name', 'unknown_medicine')
+                    )
+                    if image_path:
+                        medicine_data['image_path'] = str(image_path)
+            except Exception as e:
+                logger.warning(f"이미지 추출 중 오류: {url}, {e}")
+            
             # 최소한의 데이터 확인
             if len(medicine_data) <= 1:  # url만 있는 경우
                 logger.warning(f"추출된 데이터 없음: {url}")
@@ -199,9 +222,35 @@ class SearchManager:
         except Exception as e:
             logger.error(f"데이터 추출 중 오류 발생: {url}, {e}")
             return None
+
+    def _extract_medicine_image_url(self, soup):
+        """
+        의약품 이미지 URL 추출
+        
+        Args:
+            soup: BeautifulSoup 객체
+            
+        Returns:
+            str: 이미지 URL 또는 None
+        """
+        try:
+            # 다양한 이미지 추출 방법 시도
+            image_selectors = [
+                soup.find('div', class_='img_box').find('img') if soup.find('div', class_='img_box') else None,
+                soup.find('img', class_='type_img'),
+                soup.find('div', id='size_ct').find('img') if soup.find('div', id='size_ct') else None
+            ]
+            
+            for img_tag in image_selectors:
+                if img_tag and 'src' in img_tag.attrs:
+                    image_url = img_tag['src']
+                    # 상대 경로를 절대 경로로 변환
+                    return urllib.parse.urljoin('https://terms.naver.com', image_url)
+            
+            return None
         
         except Exception as e:
-            logger.error(f"데이터 추출 중 오류 발생: {url}, {e}")
+            logger.warning(f"이미지 추출 중 오류: {e}")
             return None
         
     def _map_section_title(self, title):
@@ -657,13 +706,12 @@ class SearchManager:
             max_pages: 최대 수집 페이지 수
             
         Returns:
-            dict: 수집 통계
+            list: 의약품 페이지 URL 리스트
         """
         base_url = "https://terms.naver.com/medicineSearch.naver?page={}"
         medicine_urls = []
         
         # 통계 초기화
-        start_time = datetime.now()
         total_pages_checked = 0
         total_medicine_links = 0
         
@@ -679,16 +727,33 @@ class SearchManager:
                 
                 # HTML 내용 가져오기
                 html_content = self.api_client.get_html_content(url)
+                
+                # HTML 내용 확인
+                if not html_content:
+                    logger.warning(f"페이지 {page_num}의 HTML 내용을 가져올 수 없음")
+                    continue
+                
+                # BeautifulSoup으로 파싱
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # 의약품 링크 찾기 (네이버 의약품사전 링크)
+                # 의약품 링크 찾기 
+                # 1. 이미지 옆의 의약품명 링크 찾기
                 medicine_links = soup.find_all('a', href=lambda href: 
                     href and 'terms.naver.com/entry.naver' in href and 'cid=51000' in href)
                 
+                # 디버깅: 발견된 모든 링크 출력
+                logger.info(f"페이지 {page_num}에서 발견된 링크:")
+                for link in medicine_links:
+                    logger.info(link.get('href', 'No href'))
+                
                 # 링크 수집
                 for link in medicine_links:
-                    full_link = f"https://terms.naver.com{link['href']}" if not link['href'].startswith('http') else link['href']
-                    medicine_urls.append(full_link)
+                    full_link = link.get('href', '')
+                    
+                    if full_link:
+                        # 상대 경로를 절대 경로로 변환
+                        full_link = f"https://terms.naver.com{full_link}" if not full_link.startswith('http') else full_link
+                        medicine_urls.append(full_link)
                 
                 total_pages_checked += 1
                 total_medicine_links += len(medicine_links)
@@ -707,50 +772,34 @@ class SearchManager:
             except Exception as e:
                 logger.error(f"페이지 {page_num} 처리 중 오류: {e}")
         
-        # 수집된 URL로 데이터 추출
-        crawl_stats = self.fetch_medicine_data_from_urls(medicine_urls)
-        
-        # 최종 통계 계산
-        end_time = datetime.now()
-        duration = end_time - start_time
-        
-        final_stats = {
-            'total_pages_checked': total_pages_checked,
-            'total_medicine_links': total_medicine_links,
-            'total_fetched': crawl_stats.get('saved_items', 0),
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat(),
-            'duration_seconds': duration.total_seconds()
-        }
-        
+        # 최종 로깅
         logger.info("의약품 검색 페이지 크롤링 완료")
         logger.info(f"총 확인 페이지: {total_pages_checked}")
         logger.info(f"총 발견 링크: {total_medicine_links}")
-        logger.info(f"총 수집 항목: {final_stats['total_fetched']}")
         
-        return final_stats
+        return medicine_urls
 
-# main.py의 search_all_keywords 함수 수정
-def search_all_keywords(search_manager, max_pages, limit=None):
-    """
-    의약품 데이터 수집
-    
-    Args:
-        search_manager: SearchManager 인스턴스
-        max_pages: 검색 페이지 수
-        limit: 무시됨 (호환성을 위해 유지)
-    """
-    # 의약품 검색 페이지에서 데이터 수집
-    stats = search_manager.fetch_medicine_list_from_search(start_page=1, max_pages=max_pages)
-    
-    # 결과 출력
-    print("\n검색 완료:")
-    print(f"총 확인 페이지: {stats['total_pages_checked']}개")
-    print(f"총 발견 링크: {stats['total_medicine_links']}개")
-    print(f"총 수집 항목: {stats['total_fetched']}개")
-    print(f"소요 시간: {stats['duration_seconds']:.1f}초\n")
-    
-    return stats
+    # main.py의 search_all_keywords 함수 수정
+    def search_all_keywords(search_manager, max_pages, limit=None):
+        """
+        의약품 데이터 수집
+        
+        Args:
+            search_manager: SearchManager 인스턴스
+            max_pages: 검색 페이지 수
+            limit: 무시됨 (호환성을 위해 유지)
+        """
+        # 의약품 검색 페이지에서 데이터 수집
+        stats = search_manager.fetch_medicine_list_from_search(start_page=1, max_pages=max_pages)
+        
+        # 결과 출력
+        print("\n검색 완료:")
+        print(f"총 확인 페이지: {stats['total_pages_checked']}개")
+        print(f"총 발견 링크: {stats['total_medicine_links']}개")
+        print(f"총 수집 항목: {stats['total_fetched']}개")
+        print(f"소요 시간: {stats['duration_seconds']:.1f}초\n")
+        
+        return stats
 
     def fetch_medicine_data_from_urls(self, urls, max_items=None, max_retries=3):
         """

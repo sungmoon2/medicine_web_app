@@ -161,6 +161,7 @@ class NaverAPIClient:
             raise
     
     @retry(max_tries=3, delay_seconds=1, exceptions=(requests.RequestException,))
+    @retry(max_tries=3, delay_seconds=1, exceptions=(requests.RequestException,))
     def get_html_content(self, url):
         """
         주어진 URL에서 HTML 내용 가져오기
@@ -172,32 +173,53 @@ class NaverAPIClient:
             str: 웹페이지 HTML 내용 또는 None (에러 발생 시)
         """
         try:
-            logger.debug(f"HTML 내용 요청: {url}")
-            
-            # 요청 헤더 설정
+            # 요청 헤더 설정 (브라우저처럼 보이도록)
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': 'https://search.naver.com/',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://terms.naver.com/',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
             
-            response = self.session.get(url, headers=headers, timeout=15)
+            # 쿠키 추가 (선택적)
+            cookies = {
+                # 필요한 경우 쿠키 추가
+            }
             
-            # 404 오류는 특별히 처리하여 retry하지 않음
-            if response.status_code == 404:
-                logger.error(f"URL 접속 중 오류 발생: 404 Client Error: 404 for url: {url}")
-                # retry 데코레이터가 감싸도 재시도하지 않도록 HTTP 오류 발생시킴
-                response.raise_for_status()
+            # 세션 사용
+            response = self.session.get(
+                url, 
+                headers=headers, 
+                cookies=cookies,
+                timeout=15
+            )
             
+            # 상태 코드 확인
             response.raise_for_status()
             
-            # 인코딩 확인 및 설정
-            if response.encoding.lower() != 'utf-8':
-                response.encoding = 'utf-8'
+            # 인코딩 처리
+            response.encoding = response.apparent_encoding
             
             return response.text
+        
+        except Exception as e:
+            logger.error(f"URL 접속 중 오류: {url}, {e}")
+            return None
+
+    def _is_valid_url(self, url):
+        """
+        URL 유효성 검사
+        
+        Args:
+            url: 검사할 URL
             
-        except requests.RequestException as e:
-            logger.error(f"URL 접속 중 오류 발생: {e}")
-            raise
+        Returns:
+            bool: 유효한 URL이면 True
+        """
+        try:
+            result = urllib.parse.urlparse(url)
+            return all([result.scheme, result.netloc])
+        except Exception:
+            return False

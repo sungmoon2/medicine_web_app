@@ -97,19 +97,19 @@ def search_all_keywords(search_manager, max_pages, limit=None):
     
     Args:
         search_manager: SearchManager 인스턴스
-        max_pages: 최대 페이지 수 또는 종료 docId
+        max_pages: 검색 페이지 수
         limit: 무시됨 (호환성을 위해 유지)
     """
-    # 기본 시작 docId 설정
-    start_doc_id = 2141123
+    # 의약품 검색 페이지에서 URL 링크 수집
+    urls = search_manager.fetch_medicine_list_from_search(start_page=1, max_pages=max_pages)
     
-    # stats를 직접 docId 범위로 호출
-    stats = search_manager.fetch_all_keywords(start_doc_id, max_pages)
+    # 수집된 URL로 의약품 데이터 추출
+    stats = search_manager.fetch_medicine_data_from_urls(urls)
     
     # 결과 출력
     print("\n검색 완료:")
-    print(f"총 수집 항목: {stats['total_fetched']}개")
-    print(f"총 처리 URL: {stats['total_calls']}회")
+    print(f"총 발견 링크: {len(urls)}개")
+    print(f"총 수집 항목: {stats['saved_items']}개")
     print(f"소요 시간: {stats['duration_seconds']:.1f}초\n")
     
     return stats
