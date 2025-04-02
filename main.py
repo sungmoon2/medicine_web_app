@@ -131,7 +131,8 @@ def parse_arguments():
         args.export, args.continue_last, args.retry_failed,
         args.docid_range, args.find_docid_range
     ]):
-        args.all = True  # 기본적으로 모든 키워드 검색
+        # 기본적으로 DocID 범위 자동 탐색으로 변경
+        args.find_docid_range = True
 
     return args
 
@@ -431,19 +432,36 @@ def main():
         # 컴포넌트 초기화
         db_manager, api_client, parser, search_manager = init_components()
         
-        # 크롤링 옵션에 따른 분기
+         # 크롤링 옵션에 따른 분기
         if args.docid_range:
             # 사용자 지정 DocID 범위로 크롤링
             try:
                 start_docid, end_docid = map(int, args.docid_range.split(','))
-                logger.info(f"사용자 지정 DocID 범위: {start_docid} ~ {end_docid}")  # 로그 추가
+                logger.info(f"사용자 지정 DocID 범위: {start_docid} ~ {end_docid}")
                 stats = search_manager.fetch_medicine_docid_range(
                     start_docid, 
                     end_docid, 
                     max_items=args.max_items
-                        )
+                )
             except ValueError:
                 logger.error("잘못된 DocID 범위 형식. 'start,end' 형태로 입력하세요.")
+                return 1
+        
+        elif args.find_docid_range or not any([
+            args.all, args.keyword, args.url, args.stats, 
+            args.export, args.continue_last, args.retry_failed
+        ]):
+            # 자동으로 DocID 범위 찾기 (기본 동작)
+            start_docid, end_docid = search_manager.find_medicine_docid_range()
+            
+            if start_docid and end_docid:
+                stats = search_manager.fetch_medicine_docid_range(
+                    start_docid, 
+                    end_docid, 
+                    max_items=args.max_items
+                )
+            else:
+                logger.error("DocID 범위를 찾을 수 없습니다.")
                 return 1
         
         elif args.find_docid_range:

@@ -1155,66 +1155,153 @@ class SearchManager:
         
         return final_stats
     
-    def find_medicine_docid_range(self, max_search_range=10000000):
+    def find_medicine_docid_range(self, max_search_range=1000, search_step=1, max_retries=3):
         """
-        의약품사전의 DocID 범위를 찾는 메서드
-        
-        # 추가: search_manager.py에 새로운 메서드로 추가
-        # 목적: 의약품사전의 유효한 DocID 범위 자동 탐색
-        # 사용 방법: 클래스 인스턴스에서 직접 호출 가능
+        의약품사전의 DocID 범위를 찾는 개선된 메서드
         
         Args:
-            max_search_range: 최대 검색 범위 (기본값: 10,000,000)
+            max_search_range: 검색할 최대 DocID 범위 (기본값: 1000)
+            search_step: 탐색 단계 크기 (기본값: 1)
+            max_retries: 각 DocID 검증 시 최대 재시도 횟수
         
         Returns:
             tuple: (시작 DocID, 종료 DocID) 또는 (None, None)
         """
-        def is_valid_medicine_docid(docid):
-            """단일 DocID의 유효성 검사"""
-            url = f"https://terms.naver.com/entry.naver?docId={docid}&cid=51000&categoryId=51000"
+        # 알려진 실제 의약품 DocID를 기본 시작점으로 사용
+        base_docid = 2134746  # 확인된 실제 의약품 페이지 DocID
+        
+        logger.info(f"의약품사전 DocID 범위 탐색 시작 (기준 DocID: {base_docid})")
+        
+        # 기준 DocID가 유효한지 확인
+        if self.is_valid_medicine_docid(base_docid):
+            start_docid = base_docid
+            logger.info(f"기준 DocID가 유효함: {base_docid}")
+        else:
+            # 기준 DocID 주변 탐색
+            logger.warning(f"기준 DocID {base_docid}가 유효하지 않음, 주변 탐색 시작")
+            
+            # 앞뒤로 100씩 탐색
+            for offset in range(-100, 101):
+                if offset == 0:
+                    continue
+                    
+                test_docid = base_docid + offset
+                if test_docid > 0 and self.is_valid_medicine_docid(test_docid):
+                    start_docid = test_docid
+                    logger.info(f"유효한 의약품 DocID 발견: {start_docid}")
+                    break
+            else:
+                # 발견 실패시 다른 범위 탐색
+                logger.warning(f"기준 DocID 주변에서 유효한 DocID를 찾지 못함, 폭넓은 탐색 시작")
+                
+                # 더 넓은 범위 설정
+                search_ranges = [
+                    (2134000, 2135000, 10),  # 범위 1: 확인된 DocID 주변
+                    (2130000, 2140000, 100)  # 범위 2: 더 넓은 범위
+                ]
+                
+                for start_range, end_range, step in search_ranges:
+                    for docid in range(start_range, end_range, step):
+                        if self.is_valid_medicine_docid(docid):
+                            start_docid = docid
+                            logger.info(f"유효한 의약품 DocID 발견: {start_docid}")
+                            break
+                    
+                    if 'start_docid' in locals():
+                        break
+                else:
+                    logger.error("유효한 의약품 DocID를 찾을 수 없습니다")
+                    return None, None
+        
+        # 시작 DocID를 기준으로 범위 탐색
+        # 1) 이전 DocID 탐색 (역방향)
+        found_prev = False
+        prev_docid = start_docid
+        
+        for _ in range(max_search_range):
+            test_docid = prev_docid - search_step
             
             try:
+                if test_docid <= 0 or not self.is_valid_medicine_docid(test_docid):
+                    # 이전 유효 DocID를 찾음
+                    logger.info(f"첫 번째 유효한 의약품 DocID: {prev_docid}")
+                    found_prev = True
+                    break
+                
+                prev_docid = test_docid
+                logger.debug(f"이전 유효 DocID 발견: {prev_docid}")
+                
+            except Exception as e:
+                logger.warning(f"이전 DocID {test_docid} 검증 중 오류: {e}")
+                break
+            
+            # 간격을 두고 요청
+            time.sleep(REQUEST_DELAY)
+        
+        if not found_prev:
+            logger.warning(f"첫 번째 의약품 DocID를 찾을 수 없어 현재 DocID 사용: {start_docid}")
+            prev_docid = start_docid
+        
+        # 2) 이후 DocID 탐색 (정방향)
+        found_next = False
+        next_docid = start_docid
+        
+        for _ in range(max_search_range):
+            test_docid = next_docid + search_step
+            
+            try:
+                if not self.is_valid_medicine_docid(test_docid):
+                    # 마지막 유효 DocID를 찾음
+                    logger.info(f"마지막 유효한 의약품 DocID: {next_docid}")
+                    found_next = True
+                    break
+                
+                next_docid = test_docid
+                logger.debug(f"다음 유효 DocID 발견: {next_docid}")
+                
+            except Exception as e:
+                logger.warning(f"다음 DocID {test_docid} 검증 중 오류: {e}")
+                break
+            
+            # 간격을 두고 요청
+            time.sleep(REQUEST_DELAY)
+        
+        if not found_next:
+            # 실패 시 임의로 범위 확장
+            next_docid = next_docid + 100 
+        
+        # 최종 범위 반환
+        logger.info(f"의약품사전 DocID 범위 결정: {prev_docid} ~ {next_docid}")
+        return prev_docid, next_docid
+
+    def is_valid_medicine_docid(self, docid, max_retries=2):
+        url = f"https://terms.naver.com/entry.naver?docId={docid}&cid=51000&categoryId=51000"
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # HTML 내용 가져오기
                 html_content = self.api_client.get_html_content(url)
                 if not html_content:
                     return False
                 
+                # BeautifulSoup으로 파싱
                 soup = BeautifulSoup(html_content, 'html.parser')
-                return self.parser.is_medicine_dictionary(soup, url)
-            
+                
+                # 간단한 검증: 제목 태그와 의약품 키워드 확인
+                title_tag = soup.find('h2', class_='headword')
+                if not title_tag:
+                    return False
+                    
+                # cite 태그에서 의약품사전 키워드 확인
+                cite_tag = soup.find('p', class_='cite')
+                return cite_tag and '의약품사전' in cite_tag.get_text()
+                
             except Exception as e:
-                logger.error(f"DocID {docid} 검증 중 오류: {e}")
-                return False
+                if attempt == max_retries:
+                    return False
+                time.sleep(REQUEST_DELAY)
         
-        # 이진 탐색으로 DocID 범위 찾기
-        start_docid, end_docid = None, None
-        
-        # 시작 DocID 찾기
-        left, right = 1, max_search_range
-        while left <= right:
-            mid = (left + right) // 2
-            if is_valid_medicine_docid(mid):
-                start_docid = mid
-                right = mid - 1
-            else:
-                left = mid + 1
-        
-        # 종료 DocID 찾기
-        if start_docid is not None:
-            left, right = start_docid, max_search_range
-            while left <= right:
-                mid = (left + right) // 2
-                if is_valid_medicine_docid(mid):
-                    end_docid = mid
-                    left = mid + 1
-                else:
-                    right = mid - 1
-        
-        if start_docid is None or end_docid is None:
-            logger.error("의약품사전 DocID 범위를 찾을 수 없습니다.")
-            return None, None
-        
-        logger.info(f"의약품사전 DocID 범위 발견: {start_docid} ~ {end_docid}")
-        return start_docid, end_docid
+        return False
     
     def fetch_medicine_docid_range(self, start_docid, end_docid, max_items=None):
         """
